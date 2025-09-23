@@ -1,5 +1,8 @@
+from dotenv import load_dotenv
 import requests
 import json
+
+load_dotenv()
 
 class Model():
     def __init__(
@@ -85,7 +88,7 @@ class Model():
         response = requests.post(
             url='https://openrouter.ai/api/v1/chat/completions',
             headers={
-                "Authorization": "Bearer <OPENROUTER_API_KEY>",
+                "Authorization": f"Bearer {os.getenv("API_KEY")}",
                 "HTTP-Referer": "<YOUR_SITE_URL>", # Optional. Site URL for rankings on openrouter.ai.
                 "X-Title": "<YOUR_SITE_NAME>", # Optional. Site title for rankings on openrouter.ai.
             },
