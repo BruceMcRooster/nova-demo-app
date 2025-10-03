@@ -2,42 +2,68 @@ from dotenv import load_dotenv
 import os
 import requests
 import json
+import uuid
+from typing import Union, Generator
 
 load_dotenv()
+OPENROUTER_API_KEY = os.getenv('API_KEY')
+
+# map model ids -> models
+model_dict = {}
 
 class Model():
     def __init__(
         self,
-        model: str = 'openopenai/gpt-4o'
+        model: str = 'x-ai/grok-4-fast:free'
     ):
-        self.model = model
-        self.model_data = requests.get(model)
+        self.model = model 
+
+        # find model data
+        all_models = requests.get('https://openrouter.ai/api/v1/models').json()['data']
+        self.model_data = None
+        for obj in all_models:
+            if obj['id'] == model:
+                self.model_data = obj
+                break
+        if not self.model_data:
+            raise NameError('Model not found')
+
+        self.id = uuid.uuid4()
+        model_dict[self.id] = self
 
         # TODO: implement backup models, prompt caching
 
-    def reply(self, prompt_obj):
+    def reply(self, prompt_obj, stream=False):
         '''
-        prompt_obj: JSON object with following attributes:
-        - Text: string, contains text prompt
-        - Image: JSON object, contains data (base64 encoding of image) and format (format of image)
-        - PDF: string, base64 encoding of PDF
-        - Audio: JSON object, contains data (base64 encoding of audio) and format (format of audio)
-        - Modalities: string array of modalities
-        Returns a JSON object
-        '''
+        prompt_obj: json object with following attributes:
+        - text: string, contains text prompt
+        - img: json object, contains data (base64 encoding of image) and format (format of image)
+        - pdf: string, base64 encoding of pdf
+        - modalities: string array of modalities
+        returns a json object
+        if field is not used set as None
 
-        # TODO: check that model has correct modality
+        stream: bool, True if stream and False otherwise. Can only stream if output is text only
+        '''
 
         content = []
         prompt = json.loads(prompt_obj)
+        
+        # check output modalities are supported
+        output_modalities = self.model_data['architecture']['output_modalities']
+        if not set(prompt['modalities']).issubset(set(output_modalities)):
+            raise ValueError('Model does not support requested modalities')
 
-        if prompt['text'] is not None:
+        # add data to content to feed to model
+        input_modalities = self.model_data['architecture']['input_modalities']
+
+        if 'text' in input_modalities and prompt['text']:
             content.append({
                 'type': 'text',
                 'text': prompt['text']
             })
 
-        if prompt['img'] is not None:
+        if 'image' in input_modalities and prompt['img']:
             img = json.loads(prompt['img'])
             url = f"data:image/{img['format']};base64,{img['data']}"
             content.append({
@@ -47,7 +73,7 @@ class Model():
                 }
             })
 
-        if prompt['pdf'] is not None:
+        if 'file' in input_modalities and prompt['pdf']:
             url = f"data:application/pdf;base64,{prompt['pdf']}"
             content.append({
                 'type': 'file',
@@ -57,19 +83,17 @@ class Model():
                 }
             })
 
-        if prompt['audio'] is not None:
-            audio = json.loads(prompt['audio'])
-            content.append({
-                'type': 'input_audio',
-                'input_audio': {
-                    'data': audio['data'],
-                    'format': audio['format']
-                }
-            })
+        # submit prompt
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
 
         payload = {
             'model': self.model,
-            'message': [
+            'messages': [
                 {
                     'role': 'user',
                     'content': content
@@ -77,22 +101,50 @@ class Model():
             ],
             'plugins': [
                 {
-                    id: 'file-parser',
-                    pdf: {
-                        engine: 'pdf-text'
+                    'id': 'file-parser',
+                    'pdf': {
+                        'engine': 'pdf-text'
                     }
                 }
             ],
-            'modalities': prompt_obj['modalities']
+            'modalities': output_modalities
         }
 
+        return self._stream(url, headers, payload) if stream and output_modalities == ['text'] else self._output(url, headers, payload)
+
+    def _stream(self, url, headers, payload):
+        payload['stream'] = True
+        buffer = ''
+        with requests.post(url, headers=headers, json=payload, stream=True) as r:
+            for chunk in r.iter_content(chunk_size=1024, decode_unicode=True):
+                buffer += chunk
+                while True:
+                    try:
+                        # Find the next complete SSE line
+                        line_end = buffer.find("\n")
+                        if line_end == -1:
+                            break
+                        line = buffer[:line_end].strip()
+                        buffer = buffer[line_end + 1:]
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                data_obj = json.loads(data)
+                                content = data_obj["choices"][0]["delta"].get("content")
+                                if content:
+                                    yield f"{content}"
+                                    print(content, end="", flush=True)
+                            except json.JSONDecodeError:
+                                pass
+                    except Exception:
+                        break
+
+    def _output(self, url, headers, payload):
         response = requests.post(
-            url='https://openrouter.ai/api/v1/chat/completions',
-            headers={
-                "Authorization": f"Bearer {os.getenv("API_KEY")}",
-                "HTTP-Referer": "<YOUR_SITE_URL>", # Optional. Site URL for rankings on openrouter.ai.
-                "X-Title": "<YOUR_SITE_NAME>", # Optional. Site title for rankings on openrouter.ai.
-            },
-            data=payload
+            url=url,
+            headers=headers,
+            json=payload
         )
-        return response.usage.model_dump_json()
+        return response.json()
