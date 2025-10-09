@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import requests
 import json
 from utils import Model, model_dict
@@ -7,6 +8,14 @@ from utils import Model, model_dict
 app = FastAPI()
 
 from fastapi.middleware.cors import CORSMiddleware
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    model_id: str
+    chat_history: list[Message]
 
 # enable cors on all sites
 app.add_middleware(
@@ -34,20 +43,17 @@ async def chat(model_id: str, prompt: str):
 
 # chat with streaming
 @app.post("/chat_streaming")
-async def chat_streaming(model_id: str, prompt: str):
+async def chat_streaming(request: ChatRequest):
     '''
     model_id: string, id of model to run on
     prompt: string, json string of prompt object
     '''
-    print("request on model_id:", model_id)
-    print("request on prompt:", prompt)
-    model = Model(model=model_id)
-
+    model = Model(model=request.model_id)
     def event_generator():
-        for chunk in model.reply({"text": prompt, "img": None, "pdf": None, "modalities": ["text"]}, stream=True):
+        # for chunk in model.reply({"text": "hello", "img": None, "pdf": None, "modalities": ["text"]}, stream=True):
+        #     yield chunk
+        for chunk in model.reply_with_history(request.chat_history, stream=True):
             yield chunk
-        return
-        
 
     output = StreamingResponse(event_generator(), media_type="application/stream+json")
     return output

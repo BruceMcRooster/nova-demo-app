@@ -19,6 +19,10 @@ class Prompt(BaseModel):
     pdf: Union[str, None] = None
     modalities: list[str] = ['text']
 
+class Message(BaseModel):
+    role: str
+    content: str
+
 class Model():
     def __init__(
         self,
@@ -119,6 +123,75 @@ class Model():
         }
 
         return self._stream(url, headers, payload) if stream and output_modalities == ['text'] else self._output(url, headers, payload)
+
+    def reply_with_history(self, chat_history: list[Message], stream=False):
+        '''
+        chat_history: list of Message objects with role and content attributes
+        stream: bool, True if stream and False otherwise. Can only stream if output is text only
+
+        '''
+        content = []
+        prompt_str = chat_history[-1].content if chat_history else None
+        prompt = {"text": prompt_str, "img": None, "pdf": None, "modalities": ['text']}
+
+        # check output modalities are supported
+        output_modalities = self.model_data['architecture']['output_modalities']
+        if not set(prompt['modalities']).issubset(set(output_modalities)):
+            raise ValueError('Model does not support requested modalities')
+
+        # add data to content to feed to model
+        input_modalities = self.model_data['architecture']['input_modalities']
+
+        if 'text' in input_modalities and prompt['text']:
+            content.append({
+                'type': 'text',
+                'text': prompt['text']
+            })
+
+        if 'image' in input_modalities and prompt['img']:
+            img = json.loads(prompt['img'])
+            url = f"data:image/{img['format']};base64,{img['data']}"
+            content.append({
+                'type': 'image_url',
+                'image_url': {
+                    'url': url
+                }
+            })
+
+        if 'file' in input_modalities and prompt['pdf']:
+            url = f"data:application/pdf;base64,{prompt['pdf']}"
+            content.append({
+                'type': 'file',
+                'file': {
+                    'filename': 'temp_doc.pdf',
+                    'file_data': url
+                }
+            })
+
+        # submit prompt
+        url = "https://openrouter.ai/api/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            'model': self.model,
+            'messages': [{'role': msg.role, 'content': [{'type': 'text', 'text': msg.content}]} for msg in chat_history],
+            'plugins': [
+                {
+                    'id': 'file-parser',
+                    'pdf': {
+                        'engine': 'pdf-text'
+                    }
+                }
+            ],
+            'modalities': output_modalities
+        }
+
+        return self._stream(url, headers, payload) if stream and output_modalities == ['text'] else self._output(url, headers, payload)
+
 
     def _stream(self, url, headers, payload):
         payload['stream'] = True

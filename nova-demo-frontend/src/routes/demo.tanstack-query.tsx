@@ -26,6 +26,14 @@ interface ChatResponse {
   }>
 }
 
+interface ModelResponsePart {
+  choices: Array<{
+    delta: {
+      content?: string
+    }
+  }>
+}
+
 interface MessageContentProps {
   content: string
   role: 'user' | 'assistant'
@@ -137,14 +145,15 @@ function ChatDemo() {
     queryKey: ['chat', lastMessage],
     queryFn: streamedQuery({
       streamFn: async function () {
-        const message = lastMessage
-        let params = new URLSearchParams()
-        params.append("model_id", selectedModel)
-        params.append("prompt", message)
-
-        const response = await fetch('http://localhost:8000/chat_streaming?' + params.toString(), {
-          method: 'POST'
-        })
+        const chat_history = chatMessages.map(({ role, content }) => ({ role, content }))
+        const response = await fetch('http://localhost:8000/chat_streaming', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            model_id: selectedModel,
+            chat_history
+          }),
+        });
 
         if (!response.body) {
           throw new Error('No response body for streaming');
@@ -169,19 +178,21 @@ function ChatDemo() {
   const { data: streamingMessage, refetch: refetchStreamingQuery, isFetching: currentlyStreaming } = useQuery(streamingQuery)
   useEffect(() => {
     try {
-      let messages = streamingMessage?.map(chunk => chunk.replaceAll("}{", "},,,,{").split(",,,,"))?.flat()
+      console.log("Raw streaming message:", streamingMessage)
+      const isolatedMessages = streamingMessage?.map(chunk => chunk.replaceAll("}{", "},,,,{").split(",,,,"))?.flat()
+      console.log("Isolated messages:", isolatedMessages)
       // parse messages
-      messages = messages?.map(chunk => {
+      const messages = isolatedMessages?.map(chunk => {
         try {
           return JSON.parse(chunk)
         } catch (e) {
           console.error("Error parsing chunk:", chunk, e)
           return null
         }
-      }).filter(Boolean)
+      }).filter(Boolean) as ModelResponsePart[]
       // accumulate content
 
-      const accLastMessage = messages?.reduce((acc, curr) => acc.concat((curr?.choices?.[0]?.delta?.content || "")), '') || ''
+      const accLastMessage = messages?.reduce((acc, cur: ModelResponsePart) => acc.concat(cur?.choices?.[0]?.delta?.content || ""), '') || ''
       if (accLastMessage) {
         const assistantMessage: Message = {
           id: Date.now().toString(),
@@ -270,11 +281,10 @@ function ChatDemo() {
     <div
       className="flex items-center justify-center min-h-screen bg-gradient-to-br from-purple-100 to-blue-100 p-4 text-white"
       style={{
-        backgroundImage:
-          'radial-gradient(50% 50% at 95% 5%, #f4a460 0%, #8b4513 70%, #1a0f0a 100%)',
+        background: 'linear-gradient(180deg, #101C1C -89.89%, #101C1C -5.74%, #173C46 32.51%, #226981 56.18%, #33B2E2 71.72%, #F1EDE6 85.34%, #FF8945 101.72%), #CCC',
       }}
     >
-      <div className="w-full max-w-4xl h-[80vh] flex flex-col rounded-xl backdrop-blur-md bg-black/50 shadow-xl border-8 border-black/10">
+      <div className="w-full max-w-4xl h-[80vh] flex flex-col rounded-[20px] bg-[#101C1C]">
 
         {/* Header */}
         <div className="p-6 border-b border-white/20">
@@ -299,7 +309,7 @@ function ChatDemo() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
               </button>
-              
+
               {modelSearchOpen && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-white/20 rounded-lg shadow-lg z-50 max-h-60 overflow-hidden">
                   <div className="p-2 border-b border-white/20">
@@ -324,9 +334,8 @@ function ChatDemo() {
                             setModelSearchOpen(false)
                             setModelSearchQuery('')
                           }}
-                          className={`w-full text-left p-2 text-sm hover:bg-white/10 border-b border-white/5 last:border-b-0 ${
-                            selectedModel === model.id ? 'bg-blue-600/30' : ''
-                          }`}
+                          className={`w-full text-left p-2 text-sm hover:bg-white/10 border-b border-white/5 last:border-b-0 ${selectedModel === model.id ? 'bg-blue-600/30' : ''
+                            }`}
                         >
                           <div className="font-medium text-white">{model.name || model.id}</div>
                           <div className="text-xs text-white/70 truncate">{model.id}</div>
@@ -355,7 +364,7 @@ function ChatDemo() {
             >
               <div
                 className={`max-w-[70%] p-4 rounded-lg ${message.role === 'user'
-                  ? 'bg-blue-600/80 text-white'
+                  ? 'bg-[#1B4957] text-white'
                   : 'bg-white/10 border border-white/20 text-white'
                   }`}
               >
