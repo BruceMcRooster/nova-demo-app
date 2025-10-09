@@ -28,10 +28,9 @@ async def chat(model_id: str, prompt: str):
     model_id: string, id of model to run on
     prompt: string, json string of prompt object
     '''
-
-    model = model_dict[model_id]
-    output = model.reply(prompt)
-    return output['choices'][0]['message']['content']
+    model = Model(model=model_id)
+    output = model.reply({"text": prompt, "img": None, "pdf": None, "modalities": ["text"]}, stream=False)
+    return output
 
 # chat with streaming
 @app.post("/chat_streaming")
@@ -41,14 +40,12 @@ async def chat_streaming(model_id: str, prompt: str):
     prompt: string, json string of prompt object
     '''
 
-    model = model_dict[model_id]
+    model = Model(model=model_id)
 
     def event_generator():
-        yield from model.reply(prompt, stream=True)
+        for chunk in model.reply({"text": prompt, "img": None, "pdf": None, "modalities": ["text"]}, stream=True):
+            yield chunk
+        
 
-    output = StreamingResponse(event_generator(), media_type="text/event-stream")
-
-    chunks = []
-    async for chunk in output.body_iterator:
-        chunks.append(chunk)
-    return ''.join(chunks)
+    output = StreamingResponse(event_generator(), media_type="application/stream+json")
+    return output

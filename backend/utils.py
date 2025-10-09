@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+from pydantic import BaseModel
 import requests
 import json
 import uuid
@@ -10,6 +11,13 @@ OPENROUTER_API_KEY = os.getenv('API_KEY')
 
 # map model ids -> models
 model_dict = {}
+
+# pydantic model for prompt
+class Prompt(BaseModel):
+    text: Union[str, None] = None
+    img: Union[str, None] = None
+    pdf: Union[str, None] = None
+    modalities: list[str] = ['text']
 
 class Model():
     def __init__(
@@ -30,10 +38,11 @@ class Model():
 
         self.id = uuid.uuid4()
         model_dict[self.id] = self
+        print("model_dict:",model_dict)
 
         # TODO: implement backup models, prompt caching
 
-    def reply(self, prompt_obj, stream=False):
+    def reply(self, prompt: Prompt, stream=False):
         '''
         prompt_obj: json object with following attributes:
         - text: string, contains text prompt
@@ -47,7 +56,6 @@ class Model():
         '''
 
         content = []
-        prompt = json.loads(prompt_obj)
         
         # check output modalities are supported
         output_modalities = self.model_data['architecture']['output_modalities']
@@ -131,11 +139,7 @@ class Model():
                             if data == "[DONE]":
                                 break
                             try:
-                                data_obj = json.loads(data)
-                                content = data_obj["choices"][0]["delta"].get("content")
-                                if content:
-                                    yield f"{content}"
-                                    print(content, end="", flush=True)
+                                yield data
                             except json.JSONDecodeError:
                                 pass
                     except Exception:

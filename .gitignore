@@ -1,2 +1,4 @@
 *.env
 sandbox.py
+__pycache__
+.venv/
