@@ -39,12 +39,14 @@ async def chat_streaming(model_id: str, prompt: str):
     model_id: string, id of model to run on
     prompt: string, json string of prompt object
     '''
-
+    print("request on model_id:", model_id)
+    print("request on prompt:", prompt)
     model = Model(model=model_id)
 
     def event_generator():
         for chunk in model.reply({"text": prompt, "img": None, "pdf": None, "modalities": ["text"]}, stream=True):
             yield chunk
+        return
         
 
     output = StreamingResponse(event_generator(), media_type="application/stream+json")

@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState, useRef, useEffect } from 'react'
+import { QueryClient, queryOptions, useMutation, useQuery } from '@tanstack/react-query'
+import { experimental_streamedQuery as streamedQuery } from '@tanstack/react-query'
+import { useState, useRef, useEffect, use } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -62,9 +63,9 @@ function MessageContent({ content, role }: MessageContentProps) {
           ),
           // Customize links
           a: ({ children, href }) => (
-            <a 
-              href={href} 
-              target="_blank" 
+            <a
+              href={href}
+              target="_blank"
               rel="noopener noreferrer"
               className="text-blue-300 hover:text-blue-200 underline"
             >
@@ -125,55 +126,121 @@ function MessageContent({ content, role }: MessageContentProps) {
 }
 
 function ChatDemo() {
-  const [messages, setMessages] = useState<Message[]>([])
   const [inputValue, setInputValue] = useState('')
-  const [isStreaming, setIsStreaming] = useState(false)
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const queryClient = new QueryClient()
+  const [chatMessages, setChatMessages] = useState<Message[]>([])
+  const [lastMessage, setLastMessage] = useState<string>("")
 
+  // Chat query with streaming
+  const streamingQuery = queryOptions({
+    queryKey: ['chat', lastMessage],
+    queryFn: streamedQuery({
+      streamFn: async function () {
+        const message = lastMessage
+        let params = new URLSearchParams()
+        params.append("model_id", selectedModel)
+        params.append("prompt", message)
+
+        const response = await fetch('http://localhost:8000/chat_streaming?' + params.toString(), {
+          method: 'POST'
+        })
+
+        if (!response.body) {
+          throw new Error('No response body for streaming');
+        }
+        const reader = response.body.getReader();
+        return (async function* () {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              return;
+            }
+            // Assuming the stream sends text chunks
+            yield new TextDecoder().decode(value);
+          }
+        })();
+      },
+    }),
+    enabled: chatMessages.length > 0,
+    refetchInterval: Infinity
+  })
+
+  const { data: streamingMessage, refetch: refetchStreamingQuery, isFetching: currentlyStreaming } = useQuery(streamingQuery)
+  useEffect(() => {
+    try {
+      let messages = streamingMessage?.map(chunk => chunk.replaceAll("}{", "},,,,{").split(",,,,"))?.flat()
+      // parse messages
+      messages = messages?.map(chunk => {
+        try {
+          return JSON.parse(chunk)
+        } catch (e) {
+          console.error("Error parsing chunk:", chunk, e)
+          return null
+        }
+      }).filter(Boolean)
+      // accumulate content
+
+      const accLastMessage = messages?.reduce((acc, curr) => acc.concat((curr?.choices?.[0]?.delta?.content || "")), '') || ''
+      if (accLastMessage) {
+        const assistantMessage: Message = {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: accLastMessage,
+          timestamp: new Date(),
+        }
+        if (chatMessages.length === 0 || chatMessages[chatMessages.length - 1].role !== 'assistant') {
+          // first assistant message
+          setChatMessages((prev) => [...prev, assistantMessage])
+        } else {
+          // update last assistant message
+          setChatMessages((prev) => {
+            const newMessages = [...prev]
+            newMessages[newMessages.length - 1] = assistantMessage
+            return newMessages
+          })
+        }
+      }
+    } catch (error) {
+      console.error("Error parsing streaming message:", error, streamingMessage)
+    }
+
+  }, [streamingMessage])
   // Available models query
   const { data: availableModels } = useQuery({
     queryKey: ['models'],
     queryFn: async () => {
       const response = await fetch('https://openrouter.ai/api/v1/models')
       const data = await response.json()
-      return data.data?.filter((model: any) => model.id.includes('free')) || []
+      return data.data || []
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
   })
 
-  const [selectedModel, setSelectedModel] = useState('x-ai/grok-beta')
+  const [selectedModel, setSelectedModel] = useState('qwen/qwen3-vl-30b-a3b-instruct')
+  const [modelSearchOpen, setModelSearchOpen] = useState(false)
+  const [modelSearchQuery, setModelSearchQuery] = useState('')
+  const modelSearchRef = useRef<HTMLDivElement>(null)
 
-  // Regular chat mutation
-  const chatMutation = useMutation({
-    mutationFn: async ({ model, prompt }: { model: string; prompt: string }) => {
-      const paramData = new URLSearchParams()
-      paramData.append('model_id', model)
-      paramData.append('prompt', prompt)
+  // Filter models based on search query
+  const filteredModels = availableModels?.filter((model: any) =>
+    (model.name || model.id).toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+    model.id.toLowerCase().includes(modelSearchQuery.toLowerCase())
+  ) || []
 
-      const response = await fetch('http://localhost:8000/chat?' + paramData.toString(), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to send message')
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (modelSearchRef.current && !modelSearchRef.current.contains(event.target as Node)) {
+        setModelSearchOpen(false)
       }
+    }
 
-      return response.json() as Promise<ChatResponse>
-    },
-    onSuccess: (data) => {
-      const assistantMessage: Message = {
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: data.choices[0]?.message?.content || 'No response received',
-        timestamp: new Date(),
-      }
-      setMessages(prev => [...prev, assistantMessage])
-    },
-  })
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [])
 
   const handleSendMessage = () => {
     if (!inputValue.trim()) return
@@ -184,14 +251,9 @@ function ChatDemo() {
       content: inputValue.trim(),
       timestamp: new Date(),
     }
+    setChatMessages((prev) => [...prev, userMessage])
+    setLastMessage(inputValue.trim())
 
-    setMessages(prev => [...prev, userMessage])
-    
-    chatMutation.mutate({
-      model: selectedModel,
-      prompt: inputValue.trim(),
-    })
-    
     setInputValue('')
   }
 
@@ -201,7 +263,8 @@ function ChatDemo() {
 
   useEffect(() => {
     scrollToBottom()
-  }, [messages])
+  }, [chatMessages])
+
 
   return (
     <div
@@ -212,46 +275,89 @@ function ChatDemo() {
       }}
     >
       <div className="w-full max-w-4xl h-[80vh] flex flex-col rounded-xl backdrop-blur-md bg-black/50 shadow-xl border-8 border-black/10">
-        
+
         {/* Header */}
         <div className="p-6 border-b border-white/20">
           <h1 className="text-2xl mb-4">Nova Chat Demo</h1>
           <div className="flex items-center gap-4">
             <label className="text-sm">Model:</label>
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="bg-white/10 border border-white/20 rounded px-3 py-1 text-white"
-              disabled={chatMutation.isPending}
-            >
-              {availableModels?.map((model: any) => (
-                <option key={model.id} value={model.id}>
-                  {model.name || model.id}
-                </option>
-              ))}
-            </select>
+            <div className="relative" ref={modelSearchRef}>
+              <button
+                onClick={() => setModelSearchOpen(!modelSearchOpen)}
+                className="bg-white/10 border border-white/20 rounded px-3 py-1 text-white min-w-[200px] text-left flex items-center justify-between"
+                disabled={currentlyStreaming}
+              >
+                <span className="truncate">
+                  {availableModels?.find((m: any) => m.id === selectedModel)?.name || selectedModel}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${modelSearchOpen ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              
+              {modelSearchOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-white/20 rounded-lg shadow-lg z-50 max-h-60 overflow-hidden">
+                  <div className="p-2 border-b border-white/20">
+                    <input
+                      type="text"
+                      placeholder="Search models..."
+                      value={modelSearchQuery}
+                      onChange={(e) => setModelSearchQuery(e.target.value)}
+                      className="w-full bg-white/10 border border-white/20 rounded px-2 py-1 text-white placeholder-white/50 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      autoFocus
+                    />
+                  </div>
+                  <div className="max-h-40 overflow-y-auto">
+                    {filteredModels.length === 0 ? (
+                      <div className="p-3 text-white/50 text-sm">No models found</div>
+                    ) : (
+                      filteredModels.map((model: any) => (
+                        <button
+                          key={model.id}
+                          onClick={() => {
+                            setSelectedModel(model.id)
+                            setModelSearchOpen(false)
+                            setModelSearchQuery('')
+                          }}
+                          className={`w-full text-left p-2 text-sm hover:bg-white/10 border-b border-white/5 last:border-b-0 ${
+                            selectedModel === model.id ? 'bg-blue-600/30' : ''
+                          }`}
+                        >
+                          <div className="font-medium text-white">{model.name || model.id}</div>
+                          <div className="text-xs text-white/70 truncate">{model.id}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.length === 0 && (
+          {(chatMessages || []).length === 0 && (
             <div className="text-center text-white/70 py-8">
               Start a conversation with Nova AI!
             </div>
           )}
-          
-          {messages.map((message) => (
+
+          {(chatMessages || []).map((message) => (
             <div
               key={message.id}
               className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[70%] p-4 rounded-lg ${
-                  message.role === 'user'
-                    ? 'bg-blue-600/80 text-white'
-                    : 'bg-white/10 border border-white/20 text-white'
-                }`}
+                className={`max-w-[70%] p-4 rounded-lg ${message.role === 'user'
+                  ? 'bg-blue-600/80 text-white'
+                  : 'bg-white/10 border border-white/20 text-white'
+                  }`}
               >
                 <MessageContent content={message.content} role={message.role} />
                 <div className="text-xs opacity-70 mt-2">
@@ -278,18 +384,18 @@ function ChatDemo() {
               }}
               placeholder="Type your message..."
               className="flex-1 p-3 rounded-lg bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={chatMutation.isPending}
+              disabled={currentlyStreaming}
             />
-            
+
             <button
               onClick={handleSendMessage}
-              disabled={!inputValue.trim() || chatMutation.isPending}
+              disabled={!inputValue.trim() || currentlyStreaming}
               className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
-              {chatMutation.isPending ? 'Sending...' : 'Send'}
+              {currentlyStreaming ? 'Sending...' : 'Send'}
             </button>
           </div>
-          
+
           <div className="text-xs text-white/50 mt-2">
             Press Enter to send
           </div>
