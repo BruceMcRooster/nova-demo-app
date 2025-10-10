@@ -1,10 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { QueryClient, queryOptions, useMutation, useQuery } from '@tanstack/react-query'
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { experimental_streamedQuery as streamedQuery } from '@tanstack/react-query'
 import { useState, useRef, useEffect, use } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
+import GlassContainer from 'liquid-glass-react'
 import 'highlight.js/styles/github-dark.css'
 
 export const Route = createFileRoute('/demo/tanstack-query')({
@@ -15,6 +17,11 @@ interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  image?: {
+    data: string
+    format: string
+    url: string
+  }
   timestamp: Date
 }
 
@@ -37,11 +44,29 @@ interface ModelResponsePart {
 interface MessageContentProps {
   content: string
   role: 'user' | 'assistant'
+  image?: {
+    data: string
+    format: string
+    url: string
+  }
 }
 
-function MessageContent({ content, role }: MessageContentProps) {
+function MessageContent({ content, role, image }: MessageContentProps) {
   if (role === 'user') {
-    return <div className="whitespace-pre-wrap">{content}</div>
+    return (
+      <div>
+        {image && (
+          <div className="mb-3">
+            <img 
+              src={image.url} 
+              alt="Uploaded image" 
+              className="max-w-full max-h-64 rounded-lg border border-white/20"
+            />
+          </div>
+        )}
+        <div className="whitespace-pre-wrap">{content}</div>
+      </div>
+    )
   }
 
   return (
@@ -135,8 +160,13 @@ function MessageContent({ content, role }: MessageContentProps) {
 
 function ChatDemo() {
   const [inputValue, setInputValue] = useState('')
+  const [uploadedImage, setUploadedImage] = useState<{
+    data: string
+    format: string
+    url: string
+  } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const queryClient = new QueryClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [chatMessages, setChatMessages] = useState<Message[]>([])
   const [lastMessage, setLastMessage] = useState<string>("")
 
@@ -145,7 +175,11 @@ function ChatDemo() {
     queryKey: ['chat', lastMessage],
     queryFn: streamedQuery({
       streamFn: async function () {
-        const chat_history = chatMessages.map(({ role, content }) => ({ role, content }))
+        const chat_history = chatMessages.map(({ role, content, image }) => ({
+          role,
+          content,
+          ...(image && { image })
+        }))
         const response = await fetch('http://localhost:8000/chat_streaming', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -172,7 +206,10 @@ function ChatDemo() {
       },
     }),
     enabled: chatMessages.length > 0,
-    refetchInterval: Infinity
+    refetchInterval: Infinity, // effectively infinite
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
   })
 
   const { data: streamingMessage, refetch: refetchStreamingQuery, isFetching: currentlyStreaming } = useQuery(streamingQuery)
@@ -253,19 +290,62 @@ function ChatDemo() {
     }
   }, [])
 
+  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    // Check if it's an image
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload an image file')
+      return
+    }
+
+    // Check file size (limit to 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Image size should be less than 10MB')
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const result = e.target?.result as string
+      const base64Data = result.split(',')[1] // Remove data:image/...;base64, prefix
+      const format = file.type.split('/')[1] // Get format (jpg, png, etc.)
+      
+      setUploadedImage({
+        data: base64Data,
+        format: format,
+        url: result // Full data URL for preview
+      })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const removeImage = () => {
+    setUploadedImage(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
   const handleSendMessage = () => {
-    if (!inputValue.trim()) return
+    if (!inputValue.trim() && !uploadedImage) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputValue.trim(),
+      content: inputValue.trim() || 'Image uploaded',
+      image: uploadedImage || undefined,
       timestamp: new Date(),
     }
     setChatMessages((prev) => [...prev, userMessage])
-    setLastMessage(inputValue.trim())
+    setLastMessage(inputValue.trim() || 'Describe this image')
 
     setInputValue('')
+    setUploadedImage(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
   }
 
   const scrollToBottom = () => {
@@ -368,7 +448,7 @@ function ChatDemo() {
                   : 'bg-white/10 border border-white/20 text-white'
                   }`}
               >
-                <MessageContent content={message.content} role={message.role} />
+                <MessageContent content={message.content} role={message.role} image={message.image} />
                 <div className="text-xs opacity-70 mt-2">
                   {message.timestamp.toLocaleTimeString()}
                 </div>
@@ -380,6 +460,23 @@ function ChatDemo() {
 
         {/* Input */}
         <div className="p-6 border-t border-white/20">
+          {/* Image Preview */}
+          {uploadedImage && (
+            <div className="mb-4 relative inline-block">
+              <img 
+                src={uploadedImage.url} 
+                alt="Upload preview" 
+                className="max-h-32 rounded-lg border border-white/20"
+              />
+              <button
+                onClick={removeImage}
+                className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm"
+              >
+                ×
+              </button>
+            </div>
+          )}
+          
           <div className="flex gap-2">
             <input
               type="text"
@@ -396,9 +493,28 @@ function ChatDemo() {
               disabled={currentlyStreaming}
             />
 
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleImageUpload}
+              className="hidden"
+            />
+
+            {/* Image upload button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={currentlyStreaming}
+              className="px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+              title="Upload image"
+            >
+              📷
+            </button>
+
             <button
               onClick={handleSendMessage}
-              disabled={!inputValue.trim() || currentlyStreaming}
+              disabled={(!inputValue.trim() && !uploadedImage) || currentlyStreaming}
               className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
               {currentlyStreaming ? 'Sending...' : 'Send'}
@@ -406,10 +522,11 @@ function ChatDemo() {
           </div>
 
           <div className="text-xs text-white/50 mt-2">
-            Press Enter to send
+            Press Enter to send • Upload images with 📷 button
           </div>
         </div>
       </div>
+      <ReactQueryDevtools initialIsOpen={false} />
     </div>
   )
 }

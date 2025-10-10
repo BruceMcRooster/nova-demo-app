@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 class Message(BaseModel):
     role: str
     content: str
+    image: dict = None  # Optional image data with data, format fields
 
 class ChatRequest(BaseModel):
     model_id: str

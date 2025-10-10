@@ -126,49 +126,49 @@ class Model():
 
     def reply_with_history(self, chat_history: list[Message], stream=False):
         '''
-        chat_history: list of Message objects with role and content attributes
+        chat_history: list of Message objects with role, content, and optional image attributes
         stream: bool, True if stream and False otherwise. Can only stream if output is text only
-
         '''
-        content = []
-        prompt_str = chat_history[-1].content if chat_history else None
-        prompt = {"text": prompt_str, "img": None, "pdf": None, "modalities": ['text']}
+        
+        # Convert chat history to proper OpenRouter format
+        messages = []
+        for msg in chat_history:
+            content = []
+            
+            # Add text content
+            if msg.content:
+                content.append({
+                    'type': 'text',
+                    'text': msg.content
+                })
+            
+            # Add image content if present
+            if hasattr(msg, 'image') and msg.image:
+                img_data = msg.image
+                url = f"data:image/{img_data['format']};base64,{img_data['data']}"
+                content.append({
+                    'type': 'image_url',
+                    'image_url': {
+                        'url': url
+                    }
+                })
+            
+            messages.append({
+                'role': msg.role,
+                'content': content
+            })
 
-        # check output modalities are supported
+        # Check output modalities are supported
         output_modalities = self.model_data['architecture']['output_modalities']
-        if not set(prompt['modalities']).issubset(set(output_modalities)):
-            raise ValueError('Model does not support requested modalities')
-
-        # add data to content to feed to model
+        
+        # Check if model supports image input
         input_modalities = self.model_data['architecture']['input_modalities']
+        has_images = any(hasattr(msg, 'image') and msg.image for msg in chat_history)
+        
+        if has_images and 'image' not in input_modalities:
+            raise ValueError('Model does not support image input')
 
-        if 'text' in input_modalities and prompt['text']:
-            content.append({
-                'type': 'text',
-                'text': prompt['text']
-            })
-
-        if 'image' in input_modalities and prompt['img']:
-            img = json.loads(prompt['img'])
-            url = f"data:image/{img['format']};base64,{img['data']}"
-            content.append({
-                'type': 'image_url',
-                'image_url': {
-                    'url': url
-                }
-            })
-
-        if 'file' in input_modalities and prompt['pdf']:
-            url = f"data:application/pdf;base64,{prompt['pdf']}"
-            content.append({
-                'type': 'file',
-                'file': {
-                    'filename': 'temp_doc.pdf',
-                    'file_data': url
-                }
-            })
-
-        # submit prompt
+        # Submit prompt
         url = "https://openrouter.ai/api/v1/chat/completions"
 
         headers = {
@@ -178,7 +178,7 @@ class Model():
 
         payload = {
             'model': self.model,
-            'messages': [{'role': msg.role, 'content': [{'type': 'text', 'text': msg.content}]} for msg in chat_history],
+            'messages': messages,
             'plugins': [
                 {
                     'id': 'file-parser',
