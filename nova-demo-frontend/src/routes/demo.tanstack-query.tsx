@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import GlassContainer from 'liquid-glass-react'
 import 'highlight.js/styles/github-dark.css'
+import { Spinner } from '@/components/Spinner'
 
 export const Route = createFileRoute('/demo/tanstack-query')({
   component: ChatDemo,
@@ -22,6 +23,11 @@ interface Message {
     format: string
     url: string
   }
+  audio?: {
+    data: string
+    format: string
+    url: string
+  }
   timestamp: Date
 }
 
@@ -29,6 +35,11 @@ interface ChatResponse {
   choices: Array<{
     message: {
       content: string
+      image?: {
+        data: string
+        format: string
+        url: string
+      }
     }
   }>
 }
@@ -37,6 +48,17 @@ interface ModelResponsePart {
   choices: Array<{
     delta: {
       content?: string
+      image?: {
+        data: string
+        format: string
+        url: string
+      }
+      images?: Array<{
+        type: string
+        image_url: {
+          url: string
+        }
+      }>
     }
   }>
 }
@@ -49,9 +71,14 @@ interface MessageContentProps {
     format: string
     url: string
   }
+  audio?: {
+    data: string
+    format: string
+    url: string
+  }
 }
 
-function MessageContent({ content, role, image }: MessageContentProps) {
+function MessageContent({ content, role, image, audio }: MessageContentProps) {
   if (role === 'user') {
     return (
       <div>
@@ -64,6 +91,23 @@ function MessageContent({ content, role, image }: MessageContentProps) {
             />
           </div>
         )}
+        {audio && (
+          <div className="mb-3">
+            <div className="bg-white/10 border border-white/20 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm text-white/70">🎵 Audio file ({audio.format})</span>
+              </div>
+              <audio 
+                controls 
+                src={audio.url}
+                className="w-full max-w-sm"
+                style={{ filter: 'invert(1) hue-rotate(180deg)' }}
+              >
+                Your browser does not support the audio element.
+              </audio>
+            </div>
+          </div>
+        )}
         <div className="whitespace-pre-wrap">{content}</div>
       </div>
     )
@@ -71,6 +115,27 @@ function MessageContent({ content, role, image }: MessageContentProps) {
 
   return (
     <div className="prose prose-invert max-w-none">
+      {image && (
+        <div className="mb-3">
+          <img 
+            src={image.url} 
+            alt="Generated image" 
+            className="max-w-full max-h-64 rounded-lg border border-white/20"
+            onError={(e) => {
+              console.error('Image failed to load:', image.url)
+              e.currentTarget.style.display = 'none'
+              // Show fallback message
+              const fallback = document.createElement('div')
+              fallback.className = 'text-red-400 text-sm p-2 border border-red-400/20 rounded bg-red-500/10'
+              fallback.textContent = 'Failed to load image'
+              e.currentTarget.parentNode?.appendChild(fallback)
+            }}
+            onLoad={() => {
+              console.log('Image loaded successfully:', image.url)
+            }}
+          />
+        </div>
+      )}
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
@@ -165,8 +230,14 @@ function ChatDemo() {
     format: string
     url: string
   } | null>(null)
+  const [uploadedAudio, setUploadedAudio] = useState<{
+    data: string
+    format: string
+    url: string
+  } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const audioInputRef = useRef<HTMLInputElement>(null)
   const [chatMessages, setChatMessages] = useState<Message[]>([])
   const [lastMessage, setLastMessage] = useState<string>("")
 
@@ -175,10 +246,11 @@ function ChatDemo() {
     queryKey: ['chat', lastMessage],
     queryFn: streamedQuery({
       streamFn: async function () {
-        const chat_history = chatMessages.map(({ role, content, image }) => ({
+        const chat_history = chatMessages.map(({ role, content, image, audio }) => ({
           role,
           content,
-          ...(image && { image })
+          ...(image && { image }),
+          ...(audio && { audio })
         }))
         const response = await fetch('http://localhost:8000/chat_streaming', {
           method: 'POST',
@@ -212,29 +284,173 @@ function ChatDemo() {
     retry: false,
   })
 
-  const { data: streamingMessage, refetch: refetchStreamingQuery, isFetching: currentlyStreaming } = useQuery(streamingQuery)
+  const { data: streamingMessage, refetch: refetchStreamingQuery, isFetching: currentlyStreaming, isPending: currentlySending } = useQuery(streamingQuery)
   useEffect(() => {
     try {
       console.log("Raw streaming message:", streamingMessage)
-      const isolatedMessages = streamingMessage?.map(chunk => chunk.replaceAll("}{", "},,,,{").split(",,,,"))?.flat()
-      console.log("Isolated messages:", isolatedMessages)
-      // parse messages
-      const messages = isolatedMessages?.map(chunk => {
+      
+      // Combine all chunks and handle incomplete JSON objects
+      const combinedChunks = streamingMessage?.join('') || ''
+      
+      // Split on complete JSON object boundaries while preserving incomplete ones
+      const jsonObjects: string[] = []
+      let currentObject = ''
+      let braceCount = 0
+      let inString = false
+      let escapeNext = false
+      
+      for (let i = 0; i < combinedChunks.length; i++) {
+        const char = combinedChunks[i]
+        currentObject += char
+        
+        if (escapeNext) {
+          escapeNext = false
+          continue
+        }
+        
+        if (char === '\\') {
+          escapeNext = true
+          continue
+        }
+        
+        if (char === '"') {
+          inString = !inString
+          continue
+        }
+        
+        if (!inString) {
+          if (char === '{') {
+            braceCount++
+          } else if (char === '}') {
+            braceCount--
+            
+            // Complete JSON object found
+            if (braceCount === 0 && currentObject.trim()) {
+              jsonObjects.push(currentObject.trim())
+              currentObject = ''
+            }
+          }
+        }
+      }
+      
+      // Add any remaining incomplete object (will be completed in next update)
+      if (currentObject.trim() && braceCount > 0) {
+        console.log("Incomplete JSON object detected, waiting for completion:", currentObject.trim())
+      }
+      
+      console.log("Parsed JSON objects:", jsonObjects)
+      
+      // Parse valid JSON objects
+      const messages = jsonObjects.map(chunk => {
         try {
-          return JSON.parse(chunk)
+          const parsed = JSON.parse(chunk)
+          // Log any message that might contain image data
+          if (parsed?.choices?.[0]?.delta?.image || 
+              parsed?.choices?.[0]?.message?.image ||
+              (parsed?.choices?.[0]?.delta?.content && parsed.choices[0].delta.content.includes('image'))) {
+            console.log("Found potential image data:", parsed)
+          }
+          return parsed
         } catch (e) {
           console.error("Error parsing chunk:", chunk, e)
           return null
         }
       }).filter(Boolean) as ModelResponsePart[]
-      // accumulate content
-
+      // accumulate content and images
       const accLastMessage = messages?.reduce((acc, cur: ModelResponsePart) => acc.concat(cur?.choices?.[0]?.delta?.content || ""), '') || ''
-      if (accLastMessage) {
+      
+      // Check for image in the streaming response - OpenRouter may return images in different formats
+      let assistantImage = null
+      
+      // Check for new format: delta.images array with image_url.url
+      const imageInImages = messages?.find(msg => msg?.choices?.[0]?.delta?.images && msg.choices[0].delta.images.length > 0)
+      if (imageInImages) {
+        const imageData = imageInImages.choices[0].delta.images?.[0]?.image_url?.url
+        if (imageData) {
+          console.log("Found image in delta.images format:", imageData)
+          
+          // Handle both data URLs and regular URLs
+          if (imageData.startsWith('data:image/')) {
+            const base64Match = imageData.match(/data:image\/([^;]+);base64,(.+)/)
+            if (base64Match) {
+              assistantImage = {
+                url: imageData,
+                data: base64Match[2],
+                format: base64Match[1]
+              }
+            }
+          } else {
+            assistantImage = {
+              url: imageData,
+              data: '',
+              format: imageData.split('.').pop()?.split('?')[0] || 'jpg'
+            }
+          }
+        }
+      }
+      
+      // Check for image in delta (legacy format)
+      if (!assistantImage) {
+        const imageInDelta = messages?.find(msg => msg?.choices?.[0]?.delta?.image)?.choices?.[0]?.delta?.image
+        if (imageInDelta) {
+          assistantImage = imageInDelta
+        }
+      }
+      
+      // Check for image URL in content (some models return image URLs)
+      if (!assistantImage) {
+        const imageUrlInContent = messages?.find(msg => {
+          const content = msg?.choices?.[0]?.delta?.content
+          return content && (content.includes('http') && (content.includes('.jpg') || content.includes('.png') || content.includes('.webp') || content.includes('image')))
+        })
+        
+        if (imageUrlInContent) {
+          const content = imageUrlInContent.choices[0].delta.content
+          if (content) {
+            const urlMatch = content.match(/(https?:\/\/[^\s]+\.(?:jpg|jpeg|png|webp|gif))/i)
+            if (urlMatch) {
+              assistantImage = {
+                url: urlMatch[0],
+                data: '', // No base64 data for URL images
+                format: urlMatch[0].split('.').pop() || 'jpg'
+              }
+            }
+          }
+        }
+      }
+      
+      // Check for base64 image data in response (legacy format)
+      const base64ImageMatch = messages?.find(msg => {
+        const content = msg?.choices?.[0]?.delta?.content
+        return content && content.includes('data:image/')
+      })
+      
+      if (base64ImageMatch && !assistantImage) {
+        const content = base64ImageMatch.choices[0].delta.content
+        if (content) {
+          const base64Match = content.match(/data:image\/([^;]+);base64,([^"'\s]+)/i)
+          if (base64Match) {
+            assistantImage = {
+              url: base64Match[0],
+              data: base64Match[2],
+              format: base64Match[1]
+            }
+          }
+        }
+      }
+      
+      if (accLastMessage || assistantImage) {
+        console.log("Creating assistant message with:", { 
+          content: accLastMessage, 
+          hasImage: !!assistantImage, 
+          imageData: assistantImage 
+        })
+        
         const assistantMessage: Message = {
           id: Date.now().toString(),
           role: 'assistant',
           content: accLastMessage,
+          ...(assistantImage && { image: assistantImage }),
           timestamp: new Date(),
         }
         if (chatMessages.length === 0 || chatMessages[chatMessages.length - 1].role !== 'assistant') {
@@ -276,6 +492,31 @@ function ChatDemo() {
     model.id.toLowerCase().includes(modelSearchQuery.toLowerCase())
   ) || []
 
+  // Helper function to check if model supports audio input
+  const supportsAudioInput = (model: any) => {
+    return model?.architecture?.input_modalities?.includes('audio') ||
+           model?.id?.includes('whisper') ||
+           model?.id?.includes('speech') ||
+           model?.name?.toLowerCase().includes('audio')
+  }
+
+  // Helper function to check if model supports image generation
+  const supportsImageGeneration = (model: any) => {
+    return model?.architecture?.output_modalities?.includes('image') || 
+           model?.id?.includes('flux') || 
+           model?.id?.includes('dalle') || 
+           model?.id?.includes('midjourney') ||
+           model?.id?.includes('stable-diffusion')
+  }
+
+  // Helper function to check if model supports image input
+  const supportsImageInput = (model: any) => {
+    return model?.architecture?.input_modalities?.includes('image') ||
+           model?.id?.includes('vision') ||
+           model?.id?.includes('vl-') ||
+           model?.name?.toLowerCase().includes('vision')
+  }
+
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -289,6 +530,46 @@ function ChatDemo() {
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [])
+
+  const handleAudioUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    console.log("Selected audio file:", file)
+    if (!file) return
+
+    // Check if it's an audio file
+    if (!file.type.startsWith('audio/')) {
+      alert('Please upload an audio file')
+      return
+    }
+
+    // Check file size (limit to 25MB for audio)
+    if (file.size > 25 * 1024 * 1024) {
+      alert('Audio file size should be less than 25MB')
+      return
+    }
+
+    // Check supported formats
+    const supportedFormats = ['wav', 'mp3']
+    const fileFormat = file.name.split('.').pop() || ''
+    if (!supportedFormats.includes(fileFormat)) {
+      alert('Supported audio formats: WAV, MP3')
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const result = e.target?.result as string
+      const base64Data = result.split(',')[1] // Remove data:audio/...;base64, prefix
+      const format = fileFormat // Use extracted format
+      console.log("Audio file uploaded:", { format, size: file.size })
+      setUploadedAudio({
+        data: base64Data,
+        format: format,
+        url: result // Full data URL for preview
+      })
+    }
+    reader.readAsDataURL(file)
+  }
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -328,23 +609,35 @@ function ChatDemo() {
     }
   }
 
+  const removeAudio = () => {
+    setUploadedAudio(null)
+    if (audioInputRef.current) {
+      audioInputRef.current.value = ''
+    }
+  }
+
   const handleSendMessage = () => {
-    if (!inputValue.trim() && !uploadedImage) return
+    if (!inputValue.trim() && !uploadedImage && !uploadedAudio) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputValue.trim() || 'Image uploaded',
+      content: inputValue.trim() || (uploadedImage ? 'Image uploaded' : 'Audio uploaded'),
       image: uploadedImage || undefined,
+      audio: uploadedAudio || undefined,
       timestamp: new Date(),
     }
     setChatMessages((prev) => [...prev, userMessage])
-    setLastMessage(inputValue.trim() || 'Describe this image')
+    setLastMessage(inputValue.trim() || (uploadedImage ? 'Describe this image' : 'Transcribe this audio'))
 
     setInputValue('')
     setUploadedImage(null)
+    setUploadedAudio(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
+    }
+    if (audioInputRef.current) {
+      audioInputRef.current.value = ''
     }
   }
 
@@ -377,9 +670,22 @@ function ChatDemo() {
                 className="bg-white/10 border border-white/20 rounded px-3 py-1 text-white min-w-[200px] text-left flex items-center justify-between"
                 disabled={currentlyStreaming}
               >
-                <span className="truncate">
-                  {availableModels?.find((m: any) => m.id === selectedModel)?.name || selectedModel}
-                </span>
+                <div className="flex items-center justify-between flex-1">
+                  <span className="truncate">
+                    {availableModels?.find((m: any) => m.id === selectedModel)?.name || selectedModel}
+                  </span>
+                  <div className="flex items-center gap-1 ml-2">
+                    {availableModels?.find((m: any) => m.id === selectedModel) && supportsImageInput(availableModels.find((m: any) => m.id === selectedModel)) && (
+                      <span className="text-xs text-green-300" title="Supports image input">👁️</span>
+                    )}
+                    {availableModels?.find((m: any) => m.id === selectedModel) && supportsAudioInput(availableModels.find((m: any) => m.id === selectedModel)) && (
+                      <span className="text-xs text-blue-300" title="Supports audio input">🎵</span>
+                    )}
+                    {availableModels?.find((m: any) => m.id === selectedModel) && supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
+                      <span className="text-xs text-purple-300" title="Can generate images">🎨</span>
+                    )}
+                  </div>
+                </div>
                 <svg
                   className={`w-4 h-4 transition-transform ${modelSearchOpen ? 'rotate-180' : ''}`}
                   fill="none"
@@ -417,8 +723,29 @@ function ChatDemo() {
                           className={`w-full text-left p-2 text-sm hover:bg-white/10 border-b border-white/5 last:border-b-0 ${selectedModel === model.id ? 'bg-blue-600/30' : ''
                             }`}
                         >
-                          <div className="font-medium text-white">{model.name || model.id}</div>
-                          <div className="text-xs text-white/70 truncate">{model.id}</div>
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="font-medium text-white">{model.name || model.id}</div>
+                              <div className="text-xs text-white/70 truncate">{model.id}</div>
+                            </div>
+                            <div className="flex gap-1">
+                              {supportsImageInput(model) && (
+                                <span className="text-xs bg-green-500/20 text-green-300 px-1 py-0.5 rounded" title="Supports image input">
+                                  👁️
+                                </span>
+                              )}
+                              {supportsAudioInput(model) && (
+                                <span className="text-xs bg-blue-500/20 text-blue-300 px-1 py-0.5 rounded" title="Supports audio input">
+                                  🎵
+                                </span>
+                              )}
+                              {supportsImageGeneration(model) && (
+                                <span className="text-xs bg-purple-500/20 text-purple-300 px-1 py-0.5 rounded" title="Can generate images">
+                                  🎨
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </button>
                       ))
                     )}
@@ -427,6 +754,35 @@ function ChatDemo() {
               )}
             </div>
           </div>
+          
+          {/* Model Capabilities Display */}
+          {availableModels?.find((m: any) => m.id === selectedModel) && (
+            <div className="mt-3 text-xs text-white/70">
+              <span>Capabilities: </span>
+              {supportsImageInput(availableModels.find((m: any) => m.id === selectedModel)) && (
+                <span className="bg-green-500/20 text-green-300 px-2 py-1 rounded mr-2">
+                  👁️ Can view images
+                </span>
+              )}
+              {supportsAudioInput(availableModels.find((m: any) => m.id === selectedModel)) && (
+                <span className="bg-blue-500/20 text-blue-300 px-2 py-1 rounded mr-2">
+                  🎵 Can process audio
+                </span>
+              )}
+              {supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
+                <span className="bg-purple-500/20 text-purple-300 px-2 py-1 rounded mr-2">
+                  🎨 Can generate images
+                </span>
+              )}
+              {!supportsImageInput(availableModels.find((m: any) => m.id === selectedModel)) && 
+               !supportsAudioInput(availableModels.find((m: any) => m.id === selectedModel)) &&
+               !supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
+                <span className="bg-gray-500/20 text-gray-300 px-2 py-1 rounded">
+                  💬 Text only
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Messages */}
@@ -448,7 +804,7 @@ function ChatDemo() {
                   : 'bg-white/10 border border-white/20 text-white'
                   }`}
               >
-                <MessageContent content={message.content} role={message.role} image={message.image} />
+                <MessageContent content={message.content} role={message.role} image={message.image} audio={message.audio} />
                 <div className="text-xs opacity-70 mt-2">
                   {message.timestamp.toLocaleTimeString()}
                 </div>
@@ -474,6 +830,31 @@ function ChatDemo() {
               >
                 ×
               </button>
+            </div>
+          )}
+
+          {/* Audio Preview */}
+          {uploadedAudio && (
+            <div className="mb-4 relative inline-block">
+              <div className="bg-white/10 border border-white/20 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm text-white/70">🎵 Audio file ({uploadedAudio.format})</span>
+                  <button
+                    onClick={removeAudio}
+                    className="bg-red-500 hover:bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
+                  >
+                    ×
+                  </button>
+                </div>
+                <audio 
+                  controls 
+                  src={uploadedAudio.url}
+                  className="w-full max-w-sm"
+                  style={{ filter: 'invert(1) hue-rotate(180deg)' }}
+                >
+                  Your browser does not support the audio element.
+                </audio>
+              </div>
             </div>
           )}
           
@@ -502,6 +883,25 @@ function ChatDemo() {
               className="hidden"
             />
 
+            {/* Hidden audio input */}
+            <input
+              ref={audioInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleAudioUpload}
+              className="hidden"
+            />
+
+            {/* Audio upload button */}
+            <button
+              onClick={() => audioInputRef.current?.click()}
+              disabled={currentlyStreaming}
+              className="px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+              title="Upload audio"
+            >
+              🎵
+            </button>
+
             {/* Image upload button */}
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -514,15 +914,28 @@ function ChatDemo() {
 
             <button
               onClick={handleSendMessage}
-              disabled={(!inputValue.trim() && !uploadedImage) || currentlyStreaming}
+              disabled={(!inputValue.trim() && !uploadedImage && !uploadedAudio) || currentlyStreaming}
               className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
-              {currentlyStreaming ? 'Sending...' : 'Send'}
+              {currentlyStreaming ? (currentlySending ? 'Sending...' : <Spinner />) : 'Send'}
             </button>
           </div>
 
           <div className="text-xs text-white/50 mt-2">
-            Press Enter to send • Upload images with 📷 button
+            <span>Press Enter to send</span>
+            {availableModels?.find((m: any) => m.id === selectedModel) && (
+              <>
+                {supportsImageInput(availableModels.find((m: any) => m.id === selectedModel)) && (
+                  <span> • Upload images with 📷 button</span>
+                )}
+                {supportsAudioInput(availableModels.find((m: any) => m.id === selectedModel)) && (
+                  <span> • Upload audio with 🎵 button</span>
+                )}
+                {supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
+                  <span> • Ask for image generation</span>
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>

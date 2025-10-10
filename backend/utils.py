@@ -122,11 +122,11 @@ class Model():
             'modalities': output_modalities
         }
 
-        return self._stream(url, headers, payload) if stream and output_modalities == ['text'] else self._output(url, headers, payload)
+        return self._stream(url, headers, payload) if stream else self._output(url, headers, payload)
 
     def reply_with_history(self, chat_history: list[Message], stream=False):
         '''
-        chat_history: list of Message objects with role, content, and optional image attributes
+        chat_history: list of Message objects with role, content, and optional image/audio attributes
         stream: bool, True if stream and False otherwise. Can only stream if output is text only
         '''
         
@@ -153,6 +153,17 @@ class Model():
                     }
                 })
             
+            # Add audio content if present
+            if hasattr(msg, 'audio') and msg.audio:
+                audio_data = msg.audio
+                content.append({
+                    'type': 'input_audio',
+                    'input_audio': {
+                        'data': audio_data['data'],
+                        'format': audio_data['format']
+                    }
+                })
+            
             messages.append({
                 'role': msg.role,
                 'content': content
@@ -161,12 +172,16 @@ class Model():
         # Check output modalities are supported
         output_modalities = self.model_data['architecture']['output_modalities']
         
-        # Check if model supports image input
+        # Check if model supports required input modalities
         input_modalities = self.model_data['architecture']['input_modalities']
         has_images = any(hasattr(msg, 'image') and msg.image for msg in chat_history)
+        has_audio = any(hasattr(msg, 'audio') and msg.audio for msg in chat_history)
         
         if has_images and 'image' not in input_modalities:
             raise ValueError('Model does not support image input')
+        
+        if has_audio and 'audio' not in input_modalities:
+            raise ValueError('Model does not support audio input')
 
         # Submit prompt
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -190,7 +205,7 @@ class Model():
             'modalities': output_modalities
         }
 
-        return self._stream(url, headers, payload) if stream and output_modalities == ['text'] else self._output(url, headers, payload)
+        return self._stream(url, headers, payload) if stream else self._output(url, headers, payload)
 
 
     def _stream(self, url, headers, payload):
