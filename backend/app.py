@@ -13,7 +13,6 @@ class Message(BaseModel):
     role: str
     content: str
     image: dict = None  # Optional image data with data, format fields
-    audio: dict = None  # Optional audio data with data, format fields
 
 class ChatRequest(BaseModel):
     model_id: str
@@ -55,7 +54,6 @@ async def chat_streaming(request: ChatRequest):
         # for chunk in model.reply({"text": "hello", "img": None, "pdf": None, "modalities": ["text"]}, stream=True):
         #     yield chunk
         for chunk in model.reply_with_history(request.chat_history, stream=True):
-            print("chunk:",chunk)
             yield chunk
 
     output = StreamingResponse(event_generator(), media_type="application/stream+json")
