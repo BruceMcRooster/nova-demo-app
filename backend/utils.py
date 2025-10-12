@@ -77,7 +77,7 @@ class Model():
 
         if 'image' in input_modalities and prompt['img']:
             img = json.loads(prompt['img'])
-            url = f"data:image/{img['format']};base64,{img['data']}"
+            url = img['url']
             content.append({
                 'type': 'image_url',
                 'image_url': {
@@ -126,7 +126,7 @@ class Model():
 
     def reply_with_history(self, chat_history: list[Message], stream=False):
         '''
-        chat_history: list of Message objects with role, content, and optional image/audio attributes
+        chat_history: list of Message objects with role, content, and optional image/audio/pdf attributes
         stream: bool, True if stream and False otherwise. Can only stream if output is text only
         '''
         
@@ -164,6 +164,19 @@ class Model():
                     }
                 })
             
+            # Add PDF content if present
+            if hasattr(msg, 'pdf') and msg.pdf:
+                pdf_data = msg.pdf
+                # Create data URL for PDF
+                pdf_url = f"data:application/pdf;base64,{pdf_data['data']}"
+                content.append({
+                    'type': 'file',
+                    'file': {
+                        'filename': pdf_data['filename'],
+                        'file_data': pdf_url
+                    }
+                })
+            
             messages.append({
                 'role': msg.role,
                 'content': content
@@ -176,12 +189,15 @@ class Model():
         input_modalities = self.model_data['architecture']['input_modalities']
         has_images = any(hasattr(msg, 'image') and msg.image for msg in chat_history)
         has_audio = any(hasattr(msg, 'audio') and msg.audio for msg in chat_history)
+        has_pdf = any(hasattr(msg, 'pdf') and msg.pdf for msg in chat_history)
         
         if has_images and 'image' not in input_modalities:
             raise ValueError('Model does not support image input')
         
         if has_audio and 'audio' not in input_modalities:
             raise ValueError('Model does not support audio input')
+        
+        # Note: PDFs work on all models through OpenRouter's file-parser plugin
 
         # Submit prompt
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -194,17 +210,20 @@ class Model():
         payload = {
             'model': self.model,
             'messages': messages,
-            'plugins': [
+            'modalities': output_modalities
+        }
+        
+        # Add file parser plugin if PDFs are present
+        if has_pdf:
+            payload['plugins'] = [
                 {
                     'id': 'file-parser',
                     'pdf': {
-                        'engine': 'pdf-text'
+                        'engine': 'pdf-text'  # Default to free text extraction
                     }
                 }
-            ],
-            'modalities': output_modalities
-        }
-
+            ]
+        print("payload:",payload)
         return self._stream(url, headers, payload) if stream else self._output(url, headers, payload)
 
 

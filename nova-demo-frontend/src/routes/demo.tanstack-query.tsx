@@ -28,6 +28,11 @@ interface Message {
     format: string
     url: string
   }
+  pdf?: {
+    data: string
+    filename: string
+    url: string
+  }
   timestamp: Date
 }
 
@@ -76,9 +81,14 @@ interface MessageContentProps {
     format: string
     url: string
   }
+  pdf?: {
+    data: string
+    filename: string
+    url: string
+  }
 }
 
-function MessageContent({ content, role, image, audio }: MessageContentProps) {
+function MessageContent({ content, role, image, audio, pdf }: MessageContentProps) {
   if (role === 'user') {
     return (
       <div>
@@ -105,6 +115,32 @@ function MessageContent({ content, role, image, audio }: MessageContentProps) {
               >
                 Your browser does not support the audio element.
               </audio>
+            </div>
+          </div>
+        )}
+        {pdf && (
+          <div className="mb-3">
+            <div className="bg-white/10 border border-white/20 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm text-white/70">📄 PDF file: {pdf.filename}</span>
+              </div>
+              <div className="flex gap-2">
+                <a 
+                  href={pdf.url}
+                  download={pdf.filename}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
+                >
+                  Download PDF
+                </a>
+                <a 
+                  href={pdf.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded transition-colors"
+                >
+                  Open in New Tab
+                </a>
+              </div>
             </div>
           </div>
         )}
@@ -235,9 +271,15 @@ function ChatDemo() {
     format: string
     url: string
   } | null>(null)
+  const [uploadedPdf, setUploadedPdf] = useState<{
+    data: string
+    filename: string
+    url: string
+  } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const audioInputRef = useRef<HTMLInputElement>(null)
+  const pdfInputRef = useRef<HTMLInputElement>(null)
   const [chatMessages, setChatMessages] = useState<Message[]>([])
   const [lastMessage, setLastMessage] = useState<string>("")
 
@@ -246,11 +288,12 @@ function ChatDemo() {
     queryKey: ['chat', lastMessage],
     queryFn: streamedQuery({
       streamFn: async function () {
-        const chat_history = chatMessages.map(({ role, content, image, audio }) => ({
+        const chat_history = chatMessages.map(({ role, content, image, audio, pdf }) => ({
           role,
           content,
           ...(image && { image }),
-          ...(audio && { audio })
+          ...(audio && { audio }),
+          ...(pdf && { pdf })
         }))
         const response = await fetch('http://localhost:8000/chat_streaming', {
           method: 'POST',
@@ -500,6 +543,12 @@ function ChatDemo() {
            model?.name?.toLowerCase().includes('audio')
   }
 
+  // Helper function to check if model supports PDF input (all models support PDF through file-parser)
+  const supportsPdfInput = (model: any) => {
+    // PDFs work on any model through OpenRouter's file-parser plugin
+    return true
+  }
+
   // Helper function to check if model supports image generation
   const supportsImageGeneration = (model: any) => {
     return model?.architecture?.output_modalities?.includes('image') || 
@@ -571,6 +620,38 @@ function ChatDemo() {
     reader.readAsDataURL(file)
   }
 
+  const handlePdfUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    console.log("Selected PDF file:", file)
+    if (!file) return
+
+    // Check if it's a PDF file
+    if (file.type !== 'application/pdf') {
+      alert('Please upload a PDF file')
+      return
+    }
+
+    // Check file size (limit to 50MB for PDFs)
+    if (file.size > 50 * 1024 * 1024) {
+      alert('PDF file size should be less than 50MB')
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      console.log("pdf e", e)
+      const result = e.target?.result as string
+      const base64Data = result.split(',').splice(1).join(',') // Remove data:application/pdf;base64, prefix
+      console.log("PDF file uploaded:", { filename: file.name, size: file.size })
+      setUploadedPdf({
+        data: base64Data,
+        filename: file.name,
+        url: result // Full data URL for preview/download
+      })
+    }
+    reader.readAsDataURL(file)
+  }
+
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -616,28 +697,40 @@ function ChatDemo() {
     }
   }
 
+  const removePdf = () => {
+    setUploadedPdf(null)
+    if (pdfInputRef.current) {
+      pdfInputRef.current.value = ''
+    }
+  }
+
   const handleSendMessage = () => {
-    if (!inputValue.trim() && !uploadedImage && !uploadedAudio) return
+    if (!inputValue.trim() && !uploadedImage && !uploadedAudio && !uploadedPdf) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputValue.trim() || (uploadedImage ? 'Image uploaded' : 'Audio uploaded'),
+      content: inputValue.trim() || (uploadedImage ? 'Image uploaded' : uploadedAudio ? 'Audio uploaded' : 'PDF uploaded'),
       image: uploadedImage || undefined,
       audio: uploadedAudio || undefined,
+      pdf: uploadedPdf || undefined,
       timestamp: new Date(),
     }
     setChatMessages((prev) => [...prev, userMessage])
-    setLastMessage(inputValue.trim() || (uploadedImage ? 'Describe this image' : 'Transcribe this audio'))
+    setLastMessage(inputValue.trim() || (uploadedImage ? 'Describe this image' : uploadedAudio ? 'Transcribe this audio' : 'Analyze this document'))
 
     setInputValue('')
     setUploadedImage(null)
     setUploadedAudio(null)
+    setUploadedPdf(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
     if (audioInputRef.current) {
       audioInputRef.current.value = ''
+    }
+    if (pdfInputRef.current) {
+      pdfInputRef.current.value = ''
     }
   }
 
@@ -769,16 +862,12 @@ function ChatDemo() {
                   🎵 Can process audio
                 </span>
               )}
+              <span className="bg-red-500/20 text-red-300 px-2 py-1 rounded mr-2">
+                📄 Can process PDFs
+              </span>
               {supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
                 <span className="bg-purple-500/20 text-purple-300 px-2 py-1 rounded mr-2">
                   🎨 Can generate images
-                </span>
-              )}
-              {!supportsImageInput(availableModels.find((m: any) => m.id === selectedModel)) && 
-               !supportsAudioInput(availableModels.find((m: any) => m.id === selectedModel)) &&
-               !supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
-                <span className="bg-gray-500/20 text-gray-300 px-2 py-1 rounded">
-                  💬 Text only
                 </span>
               )}
             </div>
@@ -804,7 +893,7 @@ function ChatDemo() {
                   : 'bg-white/10 border border-white/20 text-white'
                   }`}
               >
-                <MessageContent content={message.content} role={message.role} image={message.image} audio={message.audio} />
+                <MessageContent content={message.content} role={message.role} image={message.image} audio={message.audio} pdf={message.pdf} />
                 <div className="text-xs opacity-70 mt-2">
                   {message.timestamp.toLocaleTimeString()}
                 </div>
@@ -857,6 +946,40 @@ function ChatDemo() {
               </div>
             </div>
           )}
+
+          {/* PDF Preview */}
+          {uploadedPdf && (
+            <div className="mb-4 relative inline-block">
+              <div className="bg-white/10 border border-white/20 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm text-white/70">📄 PDF file: {uploadedPdf.filename}</span>
+                  <button
+                    onClick={removePdf}
+                    className="bg-red-500 hover:bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <a 
+                    href={uploadedPdf.url}
+                    download={uploadedPdf.filename}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
+                  >
+                    Download
+                  </a>
+                  <a 
+                    href={uploadedPdf.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded transition-colors"
+                  >
+                    Open
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
           
           <div className="flex gap-2">
             <input
@@ -892,6 +1015,25 @@ function ChatDemo() {
               className="hidden"
             />
 
+            {/* Hidden PDF input */}
+            <input
+              ref={pdfInputRef}
+              type="file"
+              accept=".pdf"
+              onChange={handlePdfUpload}
+              className="hidden"
+            />
+
+            {/* PDF upload button */}
+            <button
+              onClick={() => pdfInputRef.current?.click()}
+              disabled={currentlyStreaming}
+              className="px-4 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+              title="Upload PDF"
+            >
+              📄
+            </button>
+
             {/* Audio upload button */}
             <button
               onClick={() => audioInputRef.current?.click()}
@@ -914,7 +1056,7 @@ function ChatDemo() {
 
             <button
               onClick={handleSendMessage}
-              disabled={(!inputValue.trim() && !uploadedImage && !uploadedAudio) || currentlyStreaming}
+              disabled={(!inputValue.trim() && !uploadedImage && !uploadedAudio && !uploadedPdf) || currentlyStreaming}
               className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
             >
               {currentlyStreaming ? (currentlySending ? 'Sending...' : <Spinner />) : 'Send'}
@@ -931,6 +1073,7 @@ function ChatDemo() {
                 {supportsAudioInput(availableModels.find((m: any) => m.id === selectedModel)) && (
                   <span> • Upload audio with 🎵 button</span>
                 )}
+                <span> • Upload PDFs with 📄 button</span>
                 {supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
                   <span> • Ask for image generation</span>
                 )}
