@@ -4,7 +4,8 @@ from pydantic import BaseModel
 import requests
 import json
 import uuid
-from typing import Union, Generator
+import asyncio
+from typing import Union, Generator, Optional, Dict, List, Any
 
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv('API_KEY')
@@ -124,10 +125,13 @@ class Model():
 
         return self._stream(url, headers, payload) if stream else self._output(url, headers, payload)
 
-    def reply_with_history(self, chat_history: list[Message], stream=False):
+    def reply_with_history(self, chat_history: list[Message], stream=False, use_mcp=False, mcp_server_type="filesystem", mcp_auto_approve=False):
         '''
         chat_history: list of Message objects with role, content, and optional image/audio/pdf attributes
         stream: bool, True if stream and False otherwise. Can only stream if output is text only
+        use_mcp: bool, whether to enable MCP tools
+        mcp_server_type: str, type of MCP server to use
+        mcp_auto_approve: bool, whether to auto-approve MCP tool calls (or return them for approval)
         '''
         
         # Convert chat history to proper OpenRouter format
@@ -213,6 +217,24 @@ class Model():
             'modalities': output_modalities
         }
         
+        # Add MCP tools if enabled
+        if use_mcp:
+            try:
+                from mcp_client import mcp_manager
+                # Get MCP tools in a synchronous context
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    client = loop.run_until_complete(mcp_manager.get_or_create_client(mcp_server_type))
+                    tools = loop.run_until_complete(client.get_available_tools())
+                    if tools:
+                        payload['tools'] = tools
+                        print(f"Added {len(tools)} MCP tools to request")
+                finally:
+                    loop.close()
+            except Exception as e:
+                print(f"Failed to load MCP tools: {e}")
+        
         # Add file parser plugin if PDFs are present
         if has_pdf:
             payload['plugins'] = [
@@ -224,13 +246,23 @@ class Model():
                 }
             ]
         print("payload:",payload)
-        return self._stream(url, headers, payload) if stream else self._output(url, headers, payload)
+        
+        if stream:
+            return self._stream(url, headers, payload, use_mcp, mcp_auto_approve)
+        else:
+            return self._output(url, headers, payload, use_mcp, mcp_auto_approve)
 
 
-    def _stream(self, url, headers, payload):
+    def _stream(self, url, headers, payload, use_mcp=False, mcp_auto_approve=False):
         payload['stream'] = True
         buffer = ''
+        
+        # First, make the streaming request to get the initial response
         with requests.post(url, headers=headers, json=payload, stream=True) as r:
+            accumulated_tool_calls = []
+            accumulated_message = ""
+            tool_calls_complete = False
+            
             for chunk in r.iter_content(chunk_size=1024, decode_unicode=True):
                 buffer += chunk
                 while True:
@@ -242,20 +274,219 @@ class Model():
                         line = buffer[:line_end].strip()
                         buffer = buffer[line_end + 1:]
                         if line.startswith("data: "):
+                            print("SSE line:", line)
                             data = line[6:]
                             if data == "[DONE]":
+                                tool_calls_complete = True
                                 break
                             try:
-                                yield data
+                                parsed_data = json.loads(data)
+                                
+                                # Check for tool calls in the streaming response
+                                if use_mcp and 'choices' in parsed_data and len(parsed_data['choices']) > 0:
+                                    choice = parsed_data['choices'][0]
+                                    
+                                    # Accumulate message content
+                                    if 'delta' in choice and 'content' in choice['delta']:
+                                        accumulated_message += choice['delta']['content'] or ""
+                                    
+                                    # Check for tool calls
+                                    if 'delta' in choice and 'tool_calls' in choice['delta']:
+                                        for tool_call in choice['delta']['tool_calls']:
+                                            # Find existing tool call or create new one
+                                            if tool_call.get('index') is not None:
+                                                index = tool_call['index']
+                                                while len(accumulated_tool_calls) <= index:
+                                                    accumulated_tool_calls.append({
+                                                        'id': '',
+                                                        'type': 'function',
+                                                        'function': {'name': '', 'arguments': ''}
+                                                    })
+                                                
+                                                # Update the tool call at this index
+                                                if 'id' in tool_call:
+                                                    accumulated_tool_calls[index]['id'] = tool_call['id']
+                                                if 'function' in tool_call:
+                                                    if 'name' in tool_call['function']:
+                                                        accumulated_tool_calls[index]['function']['name'] = tool_call['function']['name']
+                                                    if 'arguments' in tool_call['function']:
+                                                        accumulated_tool_calls[index]['function']['arguments'] += tool_call['function']['arguments']
+                                        
+                                        if not mcp_auto_approve:
+                                            # Don't yield tool calls, wait for completion and approval
+                                            continue
+                                
+                                # If no tool calls or auto-approve, yield the data
+                                if not use_mcp or not accumulated_tool_calls or mcp_auto_approve:
+                                    yield data
+                                    
                             except json.JSONDecodeError:
                                 pass
                     except Exception:
                         break
+            
+            # Handle tool calls after streaming is complete
+            if use_mcp and accumulated_tool_calls and tool_calls_complete:
+                if not mcp_auto_approve:
+                    # Return tool calls for user approval
+                    yield json.dumps({
+                        "type": "tool_calls_pending",
+                        "tool_calls": accumulated_tool_calls,
+                        "message": "The AI wants to use tools. Do you approve?",
+                        "assistant_message": accumulated_message
+                    })
+                else:
+                    # Auto-approve: execute tools and continue conversation
+                    try:
+                        from mcp_client import mcp_manager
+                        import asyncio
+                        
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        try:
+                            client = loop.run_until_complete(mcp_manager.get_or_create_client("filesystem"))
+                            
+                            # Add the assistant's message with tool calls to conversation
+                            messages = payload['messages'].copy()
+                            messages.append({
+                                "role": "assistant",
+                                "content": accumulated_message,
+                                "tool_calls": accumulated_tool_calls
+                            })
+                            
+                            # Execute tool calls
+                            for tool_call in accumulated_tool_calls:
+                                tool_name = tool_call['function']['name']
+                                tool_args = json.loads(tool_call['function']['arguments'])
+                                
+                                # Execute the tool
+                                tool_result = loop.run_until_complete(client.call_tool(tool_name, tool_args))
+                                
+                                # Add tool result to messages
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call['id'],
+                                    "name": tool_name,
+                                    "content": json.dumps(tool_result) if tool_result['success'] else f"Error: {tool_result['error']}"
+                                })
+                            
+                            # Make final request to get the assistant's response
+                            final_payload = payload.copy()
+                            final_payload['messages'] = messages
+                            # Remove tools from final request to avoid infinite loop
+                            if 'tools' in final_payload:
+                                del final_payload['tools']
+                            
+                            # Stream the final response
+                            final_payload['stream'] = True
+                            with requests.post(url, headers=headers, json=final_payload, stream=True) as final_r:
+                                final_buffer = ''
+                                for final_chunk in final_r.iter_content(chunk_size=1024, decode_unicode=True):
+                                    final_buffer += final_chunk
+                                    while True:
+                                        try:
+                                            line_end = final_buffer.find("\n")
+                                            if line_end == -1:
+                                                break
+                                            line = final_buffer[:line_end].strip()
+                                            final_buffer = final_buffer[line_end + 1:]
+                                            if line.startswith("data: "):
+                                                data = line[6:]
+                                                if data == "[DONE]":
+                                                    break
+                                                yield data
+                                        except Exception:
+                                            break
+                            
+                        finally:
+                            loop.close()
+                            
+                    except Exception as e:
+                        print(f"Error handling auto-approved tool calls: {e}")
+                        yield json.dumps({
+                            "choices": [{
+                                "delta": {
+                                    "content": f"Error executing tools: {e}"
+                                }
+                            }]
+                        })
 
-    def _output(self, url, headers, payload):
+    def _output(self, url, headers, payload, use_mcp=False, mcp_auto_approve=False):
         response = requests.post(
             url=url,
             headers=headers,
             json=payload
         )
-        return response.json()
+        result = response.json()
+        
+        # Handle tool calls if present
+        if use_mcp and 'choices' in result and len(result['choices']) > 0:
+            message = result['choices'][0]['message']
+            if 'tool_calls' in message and message['tool_calls']:
+                if mcp_auto_approve:
+                    # Process tool calls automatically
+                    result = self._handle_tool_calls(result, payload)
+                else:
+                    # Return tool calls for user approval
+                    result['type'] = 'tool_calls_pending'
+                    result['requires_approval'] = True
+        
+        return result
+
+    def _handle_tool_calls(self, response, original_payload):
+        """Handle MCP tool calls and return final response"""
+        try:
+            from mcp_client import mcp_manager
+            
+            message = response['choices'][0]['message']
+            tool_calls = message['tool_calls']
+            
+            # Process each tool call
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                client = loop.run_until_complete(mcp_manager.get_or_create_client("filesystem"))
+                
+                # Add the assistant's message with tool calls to conversation
+                messages = original_payload['messages'].copy()
+                messages.append(message)
+                
+                for tool_call in tool_calls:
+                    tool_name = tool_call['function']['name']
+                    tool_args = json.loads(tool_call['function']['arguments'])
+                    
+                    # Execute the tool
+                    tool_result = loop.run_until_complete(client.call_tool(tool_name, tool_args))
+                    
+                    # Add tool result to messages
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call['id'],
+                        "name": tool_name,
+                        "content": json.dumps(tool_result) if tool_result['success'] else f"Error: {tool_result['error']}"
+                    })
+                
+                # Make final request to get the assistant's response
+                final_payload = original_payload.copy()
+                final_payload['messages'] = messages
+                # Remove tools from final request to avoid infinite loop
+                if 'tools' in final_payload:
+                    del final_payload['tools']
+                
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                }
+                
+                final_response = requests.post(url=url, headers=headers, json=final_payload)
+                return final_response.json()
+                
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            print(f"Error handling tool calls: {e}")
+            return response

@@ -300,7 +300,10 @@ function ChatDemo() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             model_id: selectedModel,
-            chat_history
+            chat_history,
+            use_mcp: mcpEnabled,
+            mcp_server_type: selectedMcpServer,
+            mcp_auto_approve: mcpAutoApprove
           }),
         });
 
@@ -387,6 +390,25 @@ function ChatDemo() {
       const messages = jsonObjects.map(chunk => {
         try {
           const parsed = JSON.parse(chunk)
+          
+          // Check for tool call approval requests
+          if (parsed?.type === 'tool_calls_pending') {
+            console.log("Tool calls pending approval:", parsed)
+            setPendingToolCalls(parsed.tool_calls || [])
+            setShowToolApproval(true)
+            
+            // Add a system message to chat
+            const approvalMessage = {
+              id: Date.now().toString(),
+              role: 'assistant' as const,
+              content: `🔧 **Tool Usage Request**\n\nI would like to use the following tools:\n${(parsed.tool_calls || []).map((tc: any) => `• **${tc.function?.name}**: ${tc.function?.description || 'No description'}`).join('\n')}\n\nDo you approve this action?`,
+              timestamp: new Date(),
+            }
+            
+            setChatMessages((prev) => [...prev, approvalMessage])
+            return null // Don't process this as a regular message
+          }
+          
           // Log any message that might contain image data
           if (parsed?.choices?.[0]?.delta?.image || 
               parsed?.choices?.[0]?.message?.image ||
@@ -399,6 +421,7 @@ function ChatDemo() {
           return null
         }
       }).filter(Boolean) as ModelResponsePart[]
+      
       // accumulate content and images
       const accLastMessage = messages?.reduce((acc, cur: ModelResponsePart) => acc.concat(cur?.choices?.[0]?.delta?.content || ""), '') || ''
       
@@ -528,6 +551,62 @@ function ChatDemo() {
   const [modelSearchOpen, setModelSearchOpen] = useState(false)
   const [modelSearchQuery, setModelSearchQuery] = useState('')
   const modelSearchRef = useRef<HTMLDivElement>(null)
+  
+  // MCP state
+  const [mcpEnabled, setMcpEnabled] = useState(false)
+  const [selectedMcpServer, setSelectedMcpServer] = useState('filesystem')
+  const [mcpServers, setMcpServers] = useState<string[]>(['filesystem'])
+  const [mcpTools, setMcpTools] = useState<any[]>([])
+  const [mcpAutoApprove, setMcpAutoApprove] = useState(true)
+  const [pendingToolCalls, setPendingToolCalls] = useState<any[]>([])
+  const [showToolApproval, setShowToolApproval] = useState(false)
+
+  // Fetch available MCP servers
+  const { data: mcpServersData } = useQuery({
+    queryKey: ['mcp-servers'],
+    queryFn: async () => {
+      try {
+        const response = await fetch('http://localhost:8000/mcp/servers')
+        const data = await response.json()
+        return data
+      } catch (error) {
+        console.error('Failed to fetch MCP servers:', error)
+        return { servers: [] }
+      }
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  })
+
+  // Fetch MCP tools when server changes
+  const { data: mcpToolsData, refetch: refetchMcpTools } = useQuery({
+    queryKey: ['mcp-tools', selectedMcpServer],
+    queryFn: async () => {
+      if (!mcpEnabled) return { tools: [] }
+      try {
+        const response = await fetch(`http://localhost:8000/mcp/tools/${selectedMcpServer}`)
+        const data = await response.json()
+        return data
+      } catch (error) {
+        console.error('Failed to fetch MCP tools:', error)
+        return { tools: [] }
+      }
+    },
+    enabled: mcpEnabled,
+    staleTime: 60 * 1000, // 1 minute
+  })
+
+  // Update MCP state when data changes
+  useEffect(() => {
+    if (mcpServersData?.servers) {
+      setMcpServers(mcpServersData.servers)
+    }
+  }, [mcpServersData])
+
+  useEffect(() => {
+    if (mcpToolsData?.tools) {
+      setMcpTools(mcpToolsData.tools)
+    }
+  }, [mcpToolsData])
 
   // Filter models based on search query
   const filteredModels = availableModels?.filter((model: any) =>
@@ -704,6 +783,98 @@ function ChatDemo() {
     }
   }
 
+  const handleToolCallApproval = async (approved: boolean) => {
+    try {
+      setShowToolApproval(false)
+      
+      const response = await fetch('http://localhost:8000/mcp/approve_tool_calls_streaming', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tool_calls: pendingToolCalls,
+          approved,
+          chat_history: chatMessages.map(({ role, content, image, audio, pdf }) => ({
+            role,
+            content,
+            ...(image && { image }),
+            ...(audio && { audio }),
+            ...(pdf && { pdf })
+          })),
+          model_id: selectedModel,
+          mcp_server_type: selectedMcpServer
+        })
+      })
+      
+      if (!response.body) {
+        throw new Error('No response body for streaming');
+      }
+      
+      const reader = response.body.getReader();
+      let accumulatedContent = '';
+      
+      // Create a new assistant message for the tool execution result
+      const assistantMessage: Message = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+      }
+      
+      setChatMessages((prev) => [...prev, assistantMessage])
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = new TextDecoder().decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              break;
+            }
+            
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content) {
+                accumulatedContent += parsed.choices[0].delta.content;
+                
+                // Update the assistant message with accumulated content
+                setChatMessages((prev) => {
+                  const newMessages = [...prev];
+                  newMessages[newMessages.length - 1] = {
+                    ...assistantMessage,
+                    content: accumulatedContent
+                  };
+                  return newMessages;
+                });
+              }
+            } catch (e) {
+              console.error('Error parsing streaming chunk:', e);
+            }
+          }
+        }
+      }
+      
+      setPendingToolCalls([])
+    } catch (error) {
+      console.error('Error handling tool approval:', error)
+      setShowToolApproval(false)
+      setPendingToolCalls([])
+      
+      // Add error message to chat
+      const errorMessage: Message = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `Error executing tools: ${error}`,
+        timestamp: new Date(),
+      }
+      setChatMessages((prev) => [...prev, errorMessage])
+    }
+  }
+
   const handleSendMessage = () => {
     if (!inputValue.trim() && !uploadedImage && !uploadedAudio && !uploadedPdf) return
 
@@ -872,6 +1043,62 @@ function ChatDemo() {
               )}
             </div>
           )}
+
+          {/* MCP Controls */}
+          <div className="mt-4 p-3 bg-white/5 border border-white/20 rounded-lg">
+            <div className="flex items-center gap-4 mb-3">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={mcpEnabled}
+                  onChange={(e) => setMcpEnabled(e.target.checked)}
+                  className="rounded"
+                />
+                Enable MCP Tools
+              </label>
+              {mcpEnabled && (
+                <>
+                  <select
+                    value={selectedMcpServer}
+                    onChange={(e) => setSelectedMcpServer(e.target.value)}
+                    className="bg-white/10 border border-white/20 rounded px-2 py-1 text-white text-sm"
+                  >
+                    {mcpServers.map(server => (
+                      <option key={server} value={server} className="bg-gray-800">
+                        {server}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={mcpAutoApprove}
+                      onChange={(e) => setMcpAutoApprove(e.target.checked)}
+                      className="rounded"
+                    />
+                    Auto-approve tool calls
+                  </label>
+                </>
+              )}
+            </div>
+            
+            {mcpEnabled && mcpTools.length > 0 && (
+              <div className="text-xs text-white/60">
+                <span>Available Tools: </span>
+                {mcpTools.map((tool, index) => (
+                  <span key={index} className="bg-orange-500/20 text-orange-300 px-1 py-0.5 rounded mr-1">
+                    🔧 {tool.function?.name || 'Unknown'}
+                  </span>
+                ))}
+              </div>
+            )}
+            
+            {mcpEnabled && mcpTools.length === 0 && (
+              <div className="text-xs text-white/60">
+                <span className="text-yellow-400">⚠️ No MCP tools available</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Messages */}
@@ -902,6 +1129,52 @@ function ChatDemo() {
           ))}
           <div ref={messagesEndRef} />
         </div>
+
+        {/* Tool Call Approval Modal */}
+        {showToolApproval && (
+          <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-gray-800 border border-white/20 rounded-lg p-6 max-w-md w-full mx-4">
+              <h3 className="text-lg font-semibold mb-4 text-white">🔧 Tool Usage Request</h3>
+              <p className="text-white/80 mb-4">
+                The AI wants to use the following tools:
+              </p>
+              <div className="space-y-2 mb-6">
+                {pendingToolCalls.map((toolCall, index) => (
+                  <div key={index} className="bg-white/10 rounded p-3">
+                    <div className="font-medium text-white">
+                      🔧 {toolCall.function?.name || 'Unknown Tool'}
+                    </div>
+                    {toolCall.function?.description && (
+                      <div className="text-sm text-white/70 mt-1">
+                        {toolCall.function.description}
+                      </div>
+                    )}
+                    <div className="text-xs text-white/60 mt-2">
+                      Arguments: {JSON.stringify(JSON.parse(toolCall.function?.arguments || '{}'), null, 2)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-white/80 mb-4">
+                Do you approve this action?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => handleToolCallApproval(true)}
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded font-medium transition-colors"
+                >
+                  ✅ Approve
+                </button>
+                <button
+                  onClick={() => handleToolCallApproval(false)}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded font-medium transition-colors"
+                >
+                  ❌ Decline
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Input */}
         <div className="p-6 border-t border-white/20">
@@ -1076,6 +1349,9 @@ function ChatDemo() {
                 <span> • Upload PDFs with 📄 button</span>
                 {supportsImageGeneration(availableModels.find((m: any) => m.id === selectedModel)) && (
                   <span> • Ask for image generation</span>
+                )}
+                {mcpEnabled && mcpTools.length > 0 && (
+                  <span> • MCP tools enabled (🔧 {mcpTools.length} tools{mcpAutoApprove ? ', auto-approved' : ', requires approval'})</span>
                 )}
               </>
             )}
