@@ -20,7 +20,7 @@ class ChatRequest(BaseModel):
     model_id: str
     chat_history: list[Message]
     use_mcp: bool = False
-    mcp_server_type: str = "filesystem"
+    mcp_server_type: str = "cmu_api"
     mcp_auto_approve: bool = False  # Whether to auto-approve MCP tool calls
 
 # enable cors on all sites
@@ -78,7 +78,7 @@ async def get_mcp_servers():
     Get available MCP server types
     '''
     try:
-        from mcp_client import mcp_manager
+        from mcp_client_fastmcp import mcp_manager
         return {
             "servers": list(mcp_manager.default_configs.keys()),
             "default_configs": mcp_manager.default_configs
@@ -92,7 +92,7 @@ async def get_mcp_tools(server_type: str):
     Get available tools for a specific MCP server type
     '''
     try:
-        from mcp_client import mcp_manager
+        from mcp_client_fastmcp import mcp_manager
         client = await mcp_manager.get_or_create_client(server_type)
         tools = await client.get_available_tools()
         return {
@@ -109,7 +109,7 @@ async def cleanup_mcp():
     Clean up all MCP connections
     '''
     try:
-        from mcp_client import mcp_manager
+        from mcp_client_fastmcp import mcp_manager
         await mcp_manager.cleanup_all()
         return {"message": "All MCP connections cleaned up"}
     except Exception as e:
@@ -121,7 +121,7 @@ class ToolCallApprovalRequest(BaseModel):
     approved: bool
     chat_history: list[Message]
     model_id: str
-    mcp_server_type: str = "filesystem"
+    mcp_server_type: str = "cmu_api"
 
 @app.post("/mcp/approve_tool_calls")
 async def approve_tool_calls(request: ToolCallApprovalRequest):
@@ -139,7 +139,7 @@ async def approve_tool_calls(request: ToolCallApprovalRequest):
                 }]
             }
         
-        from mcp_client import mcp_manager
+        from mcp_client_fastmcp import mcp_manager
         import asyncio
         
         # Process each tool call
@@ -267,7 +267,7 @@ async def approve_tool_calls_streaming(request: ToolCallApprovalRequest):
             
             return StreamingResponse(decline_generator(), media_type="application/stream+json")
         
-        from mcp_client import mcp_manager
+        from mcp_client_fastmcp import mcp_manager
         import asyncio
         
         def event_generator():
