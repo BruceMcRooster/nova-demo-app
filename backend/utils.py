@@ -125,7 +125,7 @@ class Model():
 
         return self._stream(url, headers, payload) if stream else self._output(url, headers, payload)
 
-    def reply_with_history(self, chat_history: list[Message], stream=False, use_mcp=False, mcp_server_type="filesystem", mcp_auto_approve=False):
+    def reply_with_history(self, chat_history: list[Message], stream=False, use_mcp=False, mcp_server_type="cmu_api", mcp_auto_approve=False):
         '''
         chat_history: list of Message objects with role, content, and optional image/audio/pdf attributes
         stream: bool, True if stream and False otherwise. Can only stream if output is text only
@@ -216,17 +216,18 @@ class Model():
             'messages': messages,
             'modalities': output_modalities
         }
-        
+        print("use_mcp:",use_mcp)
         # Add MCP tools if enabled
         if use_mcp:
             try:
-                from mcp_client import mcp_manager
+                from mcp_client_fastmcp import mcp_manager
                 # Get MCP tools in a synchronous context
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
                     client = loop.run_until_complete(mcp_manager.get_or_create_client(mcp_server_type))
                     tools = loop.run_until_complete(client.get_available_tools())
+                    print(f"Retrieved {tools} tools from MCP server")
                     if tools:
                         payload['tools'] = tools
                         print(f"Added {len(tools)} MCP tools to request")
@@ -338,14 +339,14 @@ class Model():
                 else:
                     # Auto-approve: execute tools and continue conversation
                     try:
-                        from mcp_client import mcp_manager
+                        from mcp_client_fastmcp import mcp_manager
                         import asyncio
                         
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         
                         try:
-                            client = loop.run_until_complete(mcp_manager.get_or_create_client("filesystem"))
+                            client = loop.run_until_complete(mcp_manager.get_or_create_client("cmu_api"))
                             
                             # Add the assistant's message with tool calls to conversation
                             messages = payload['messages'].copy()
@@ -358,7 +359,8 @@ class Model():
                             # Execute tool calls
                             for tool_call in accumulated_tool_calls:
                                 tool_name = tool_call['function']['name']
-                                tool_args = json.loads(tool_call['function']['arguments'])
+                                print("tool_call:",tool_call)
+                                tool_args = json.loads(tool_call['function']['arguments'] or "{}")
                                 
                                 # Execute the tool
                                 tool_result = loop.run_until_complete(client.call_tool(tool_name, tool_args))
@@ -401,9 +403,9 @@ class Model():
                             
                         finally:
                             loop.close()
-                            
+                                
                     except Exception as e:
-                        print(f"Error handling auto-approved tool calls: {e}")
+                        print(f"Error handling auto-approved tool calls: {e.with_traceback()}")
                         yield json.dumps({
                             "choices": [{
                                 "delta": {
@@ -437,7 +439,7 @@ class Model():
     def _handle_tool_calls(self, response, original_payload):
         """Handle MCP tool calls and return final response"""
         try:
-            from mcp_client import mcp_manager
+            from mcp_client_fastmcp import mcp_manager
             
             message = response['choices'][0]['message']
             tool_calls = message['tool_calls']
@@ -447,7 +449,7 @@ class Model():
             asyncio.set_event_loop(loop)
             
             try:
-                client = loop.run_until_complete(mcp_manager.get_or_create_client("filesystem"))
+                client = loop.run_until_complete(mcp_manager.get_or_create_client("cmu_api"))
                 
                 # Add the assistant's message with tool calls to conversation
                 messages = original_payload['messages'].copy()

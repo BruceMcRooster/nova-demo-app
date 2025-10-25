@@ -44,13 +44,13 @@ After adding packages, they will be automatically added to `pyproject.toml` and 
 Start the FastAPI server with auto-reload:
 
 ```bash
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+uvicorn app:app --reload --host 0.0.0.0 --port 8001
 ```
 
 The application will be available at:
-- **API**: http://localhost:8000
-- **Interactive API docs**: http://localhost:8000/docs
-- **Alternative docs**: http://localhost:8000/redoc
+- **API**: http://localhost:8001
+- **Interactive API docs**: http://localhost:8001/docs
+- **Alternative docs**: http://localhost:8001/redoc
 
 ## API Endpoints
 
@@ -66,7 +66,7 @@ Non-streaming chat endpoint.
 
 **Example request:**
 ```bash
-curl -X POST "http://localhost:8000/chat" \
+curl -X POST "http://localhost:8001/chat" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "model_id=your-model-id&prompt=Hello, how are you?"
 ```
@@ -80,7 +80,7 @@ Streaming chat endpoint for real-time responses.
 
 **Example request:**
 ```bash
-curl -X POST "http://localhost:8000/chat_streaming" \
+curl -X POST "http://localhost:8001/chat_streaming" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "model_id=your-model-id&prompt=Tell me a story"
 ```
@@ -90,7 +90,7 @@ curl -X POST "http://localhost:8000/chat_streaming" \
 You can test the API endpoints using:
 - **Postman**: Import the endpoints and test with the interactive UI
 - **curl**: Use the example commands above
-- **FastAPI docs**: Visit http://localhost:8000/docs for interactive testing
+- **FastAPI docs**: Visit http://localhost:8001/docs for interactive testing
 
 ## Development
 

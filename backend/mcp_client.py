@@ -8,8 +8,6 @@ from mcp.types import ContentBlock, Icon, TextContent
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-
-
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
@@ -136,7 +134,6 @@ class MCPManager:
                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
                 "env": None
             },
-            # Add more default MCP server configurations here
         }
 
     async def get_or_create_client(self, server_type: str = "filesystem", custom_config: Optional[Dict] = None) -> MCPClient:

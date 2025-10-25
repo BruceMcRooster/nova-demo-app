@@ -295,7 +295,7 @@ function ChatDemo() {
           ...(audio && { audio }),
           ...(pdf && { pdf })
         }))
-        const response = await fetch('http://localhost:8000/chat_streaming', {
+        const response = await fetch('http://localhost:8001/chat_streaming', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -554,8 +554,8 @@ function ChatDemo() {
   
   // MCP state
   const [mcpEnabled, setMcpEnabled] = useState(false)
-  const [selectedMcpServer, setSelectedMcpServer] = useState('filesystem')
-  const [mcpServers, setMcpServers] = useState<string[]>(['filesystem'])
+  const [selectedMcpServer, setSelectedMcpServer] = useState('cmu_api')
+  const [mcpServers, setMcpServers] = useState<string[]>(['cmu_api'])
   const [mcpTools, setMcpTools] = useState<any[]>([])
   const [mcpAutoApprove, setMcpAutoApprove] = useState(true)
   const [pendingToolCalls, setPendingToolCalls] = useState<any[]>([])
@@ -566,7 +566,7 @@ function ChatDemo() {
     queryKey: ['mcp-servers'],
     queryFn: async () => {
       try {
-        const response = await fetch('http://localhost:8000/mcp/servers')
+        const response = await fetch('http://localhost:8001/mcp/servers')
         const data = await response.json()
         return data
       } catch (error) {
@@ -583,7 +583,7 @@ function ChatDemo() {
     queryFn: async () => {
       if (!mcpEnabled) return { tools: [] }
       try {
-        const response = await fetch(`http://localhost:8000/mcp/tools/${selectedMcpServer}`)
+        const response = await fetch(`http://localhost:8001/mcp/tools/${selectedMcpServer}`)
         const data = await response.json()
         return data
       } catch (error) {
@@ -787,7 +787,7 @@ function ChatDemo() {
     try {
       setShowToolApproval(false)
       
-      const response = await fetch('http://localhost:8000/mcp/approve_tool_calls_streaming', {
+      const response = await fetch('http://localhost:8001/mcp/approve_tool_calls_streaming', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
