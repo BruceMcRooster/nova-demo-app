@@ -295,7 +295,7 @@ function ChatDemo() {
           ...(audio && { audio }),
           ...(pdf && { pdf })
         }))
-        const response = await fetch('http://localhost:8001/chat_streaming', {
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/chat_streaming`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -566,7 +566,7 @@ function ChatDemo() {
     queryKey: ['mcp-servers'],
     queryFn: async () => {
       try {
-        const response = await fetch('http://localhost:8001/mcp/servers')
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/mcp/servers`)
         const data = await response.json()
         return data
       } catch (error) {
@@ -583,7 +583,7 @@ function ChatDemo() {
     queryFn: async () => {
       if (!mcpEnabled) return { tools: [] }
       try {
-        const response = await fetch(`http://localhost:8001/mcp/tools/${selectedMcpServer}`)
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/mcp/tools/${selectedMcpServer}`)
         const data = await response.json()
         return data
       } catch (error) {
@@ -786,8 +786,8 @@ function ChatDemo() {
   const handleToolCallApproval = async (approved: boolean) => {
     try {
       setShowToolApproval(false)
-      
-      const response = await fetch('http://localhost:8001/mcp/approve_tool_calls_streaming', {
+
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/mcp/approve_tool_calls_streaming`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
