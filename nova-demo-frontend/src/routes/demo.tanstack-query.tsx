@@ -1,12 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { QueryClient, queryOptions, useMutation, useQuery } from '@tanstack/react-query'
+import { queryOptions, useQuery } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { experimental_streamedQuery as streamedQuery } from '@tanstack/react-query'
-import { useState, useRef, useEffect, use } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import GlassContainer from 'liquid-glass-react'
 import 'highlight.js/styles/github-dark.css'
 import { Spinner } from '@/components/Spinner'
 
@@ -34,19 +33,6 @@ interface Message {
     url: string
   }
   timestamp: Date
-}
-
-interface ChatResponse {
-  choices: Array<{
-    message: {
-      content: string
-      image?: {
-        data: string
-        format: string
-        url: string
-      }
-    }
-  }>
 }
 
 interface ModelResponsePart {
@@ -330,7 +316,7 @@ function ChatDemo() {
     retry: false,
   })
 
-  const { data: streamingMessage, refetch: refetchStreamingQuery, isFetching: currentlyStreaming, isPending: currentlySending } = useQuery(streamingQuery)
+  const { data: streamingMessage, isFetching: currentlyStreaming, isPending: currentlySending } = useQuery(streamingQuery)
   useEffect(() => {
     try {
       console.log("Raw streaming message:", streamingMessage)
@@ -578,7 +564,7 @@ function ChatDemo() {
   })
 
   // Fetch MCP tools when server changes
-  const { data: mcpToolsData, refetch: refetchMcpTools } = useQuery({
+  const { data: mcpToolsData } = useQuery({
     queryKey: ['mcp-tools', selectedMcpServer],
     queryFn: async () => {
       if (!mcpEnabled) return { tools: [] }
@@ -620,12 +606,6 @@ function ChatDemo() {
            model?.id?.includes('whisper') ||
            model?.id?.includes('speech') ||
            model?.name?.toLowerCase().includes('audio')
-  }
-
-  // Helper function to check if model supports PDF input (all models support PDF through file-parser)
-  const supportsPdfInput = (model: any) => {
-    // PDFs work on any model through OpenRouter's file-parser plugin
-    return true
   }
 
   // Helper function to check if model supports image generation
