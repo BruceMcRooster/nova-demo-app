@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from typing import Optional, Dict, List, Any
 
 try:
@@ -168,7 +169,8 @@ class MCPManager:
         self.clients: Dict[str, MCPClient] = {}
         self.default_configs = {
             "cmu_api": {
-                "url": "http://0.0.0.0:8000/mcp"
+                # env variables for CMU API MCP server
+                "url": os.getenv("CMU_API_MCP_URL", "http://localhost:8000/mcp")
             },
             # Add more default MCP server configurations here
         }
