@@ -370,7 +370,8 @@ async def approve_tool_calls_streaming(request: ToolCallApprovalRequest):
                 # Stream the response
                 buffer = ''
                 with requests.post(url, headers=headers, json=payload, stream=True) as response:
-                    for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
+                    for chunk in response.iter_content(chunk_size=1024, decode_unicode=False):
+                        chunk = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
                         buffer += chunk
                         while True:
                             try:

@@ -254,7 +254,7 @@ class Model():
             return self._output(url, headers, payload, use_mcp, mcp_auto_approve)
 
 
-    def _stream(self, url, headers, payload, use_mcp=False, mcp_auto_approve=False):
+    def _stream(self, url, headers, payload, use_mcp=False, server_name='cmu_api', mcp_auto_approve=False):
         payload['stream'] = True
         buffer = ''
         
@@ -264,7 +264,8 @@ class Model():
             accumulated_message = ""
             tool_calls_complete = False
             
-            for chunk in r.iter_content(chunk_size=1024, decode_unicode=True):
+            for chunk in r.iter_content(chunk_size=1024, decode_unicode=False):
+                chunk = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
                 buffer += chunk
                 while True:
                     try:
@@ -346,7 +347,7 @@ class Model():
                         asyncio.set_event_loop(loop)
                         
                         try:
-                            client = loop.run_until_complete(mcp_manager.get_or_create_client("cmu_api"))
+                            client = loop.run_until_complete(mcp_manager.get_or_create_client(server_name))
                             
                             # Add the assistant's message with tool calls to conversation
                             messages = payload['messages'].copy()
@@ -384,7 +385,8 @@ class Model():
                             final_payload['stream'] = True
                             with requests.post(url, headers=headers, json=final_payload, stream=True) as final_r:
                                 final_buffer = ''
-                                for final_chunk in final_r.iter_content(chunk_size=1024, decode_unicode=True):
+                                for final_chunk in final_r.iter_content(chunk_size=1024, decode_unicode=False):
+                                    final_chunk = final_chunk.decode('utf-8') if isinstance(final_chunk, bytes) else final_chunk
                                     final_buffer += final_chunk
                                     while True:
                                         try:
@@ -414,7 +416,7 @@ class Model():
                             }]
                         })
 
-    def _output(self, url, headers, payload, use_mcp=False, mcp_auto_approve=False):
+    def _output(self, url, headers, payload, use_mcp=False, server_name='cmu_api', mcp_auto_approve=False):
         response = requests.post(
             url=url,
             headers=headers,
@@ -428,7 +430,7 @@ class Model():
             if 'tool_calls' in message and message['tool_calls']:
                 if mcp_auto_approve:
                     # Process tool calls automatically
-                    result = self._handle_tool_calls(result, payload)
+                    result = self._handle_tool_calls(result, payload, server_name)
                 else:
                     # Return tool calls for user approval
                     result['type'] = 'tool_calls_pending'
@@ -436,7 +438,7 @@ class Model():
         
         return result
 
-    def _handle_tool_calls(self, response, original_payload):
+    def _handle_tool_calls(self, response, original_payload, server_name):
         """Handle MCP tool calls and return final response"""
         try:
             from mcp_client_fastmcp import mcp_manager
@@ -449,7 +451,7 @@ class Model():
             asyncio.set_event_loop(loop)
             
             try:
-                client = loop.run_until_complete(mcp_manager.get_or_create_client("cmu_api"))
+                client = loop.run_until_complete(mcp_manager.get_or_create_client(server_name))
                 
                 # Add the assistant's message with tool calls to conversation
                 messages = original_payload['messages'].copy()
