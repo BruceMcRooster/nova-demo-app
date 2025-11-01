@@ -169,7 +169,6 @@ function ChatDemo() {
           mcpAutoApprove={mcpAutoApprove}
         />
       </div>
-      <ReactQueryDevtools initialIsOpen={false} />
     </div>
   )
 }

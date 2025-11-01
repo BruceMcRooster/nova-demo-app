@@ -167,13 +167,7 @@ class MCPClient:
 class MCPManager:
     def __init__(self):
         self.clients: Dict[str, MCPClient] = {}
-        self.default_configs = {
-            "cmu_api": {
-                # env variables for CMU API MCP server
-                "url": os.getenv("CMU_API_MCP_URL", "http://localhost:8000/mcp")
-            },
-            # Add more default MCP server configurations here
-        }
+        self.default_configs = json.load(open(os.path.join(os.path.dirname(__file__), 'mcp_servers.json')))
 
     async def get_or_create_client(self, server_type: str = "filesystem", custom_config: Optional[Dict] = None) -> MCPClient:
         """Get existing client or create new one"""
